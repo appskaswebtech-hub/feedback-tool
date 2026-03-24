@@ -1,11 +1,10 @@
-
 generator client {
   provider = "prisma-client-js"
 }
 
 datasource db {
-  provider = "sqlite"
-  url      = "file:dev.sqlite"
+  provider = "mysql"
+  url      = "mysql://root:@localhost:3306/quiz_feedback"
 }
 
 model Session {
@@ -28,40 +27,68 @@ model Session {
 
 model Survey {
   id               Int       @id @default(autoincrement())
-  title            String    @unique
-  isFrenchVersion  Boolean   @default(false) 
-  surveyId         Int? 
+  shop             String    // Shop domain (mystore.myshopify.com)
+  title            String
+  isFrenchVersion  Boolean   @default(false)
+  surveyId         Int?
   questions        Question[]
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([shop, title]) // Unique title per shop
+  @@index([shop]) // Index for faster shop queries
 }
 
 model Question {
-  id             Int       @id @default(autoincrement())
-  text           String
-  surveyId       Int
-  survey         Survey    @relation(fields: [surveyId], references: [id])
-  answers        Answer[]
-  isMultiChoice  Boolean   @default(false) 
-  isConditional  Boolean   @default(false)
-  isTextBox      Boolean   @default(false)
-  conditionAnswer String? 
-}
+  id              Int       @id @default(autoincrement())
+  text            String
+  surveyId        Int
+  survey          Survey    @relation(fields: [surveyId], references: [id], onDelete: Cascade)
+  answers         Answer[]
+  isMultiChoice   Boolean   @default(false)
+  isConditional   Boolean   @default(false)
+  isTextBox       Boolean   @default(false)
+  isSingle        Boolean   @default(false)
+  conditionAnswer String?
 
+  @@index([surveyId])
+}
 
 model Answer {
   id          Int      @id @default(autoincrement())
-  text        String  
+  text        String
   questionId  Int
-  haveTextBox Boolean  @default(false) 
-  question    Question @relation(fields: [questionId], references: [id])
-}
+  haveTextBox Boolean  @default(false)
+  question    Question @relation(fields: [questionId], references: [id], onDelete: Cascade)
 
+  @@index([questionId])
+}
 
 model ApiProxyData {
   id          Int      @id @default(autoincrement())
-  email       String  
-  answers     String  
+  shop        String   // Shop domain that owns this response
+  email       String
+  answers     String   @db.LongText
   surveyTitle String?
-  shopDomain  String?
+  shopDomain  String?  // Customer's shop domain (if different)
   orderId     String?
   createdAt   DateTime @default(now())
+
+  @@index([shop])
+  @@index([orderId])
+}
+
+// ─── NEW: tracks active billing plan per shop ─────────────────
+model ShopPlan {
+  id                   Int       @id @default(autoincrement())
+  shop                 String    @unique        // one plan record per shop
+  plan                 String    @default("free") // "free" | "pro" | "advanced"
+  subscriptionId       String?                  // Shopify AppSubscription GID
+  status               String    @default("active") // "active" | "cancelled" | "expired"
+  trialEndsAt          DateTime?                // when trial expires
+  billingStartedAt     DateTime?                // when paid billing began
+  createdAt            DateTime  @default(now())
+  updatedAt            DateTime  @updatedAt
+
+  @@index([shop])
 }

@@ -25,8 +25,8 @@ const SurveyBarChart = ({ surveyData, language }) => {
     // Filter the survey data based on the selected language (English or French)
     const filteredSurveyData = surveyData.filter(
         (survey) =>
-            (language === "en" && survey.isFrenchVersion) ||
-            (language === "fr" && !survey.isFrenchVersion)
+            (language === "en" && !survey.isFrenchVersion) ||
+            (language === "fr" && survey.isFrenchVersion)
     );
 
     //If need to hide french or english
@@ -77,12 +77,12 @@ const SurveyBarChart = ({ surveyData, language }) => {
                                 const yesAnswer = question.answersCount.find(
                                     (ans) => language === "en"
                                         ? ans.answer.toLowerCase() === "yes"
-                                        : ans.answer.toLowerCase() === "oui"
+                                        : ans.answer.toLowerCase() === "yes"
                                 );
                                 const noAnswer = question.answersCount.find(
                                     (ans) => language === "en"
                                         ? ans.answer.toLowerCase() === "no"
-                                        : ans.answer.toLowerCase() === "non"
+                                        : ans.answer.toLowerCase() === "no"
                                 );
 
                                 const yesCount = yesAnswer ? yesAnswer.count : 0;

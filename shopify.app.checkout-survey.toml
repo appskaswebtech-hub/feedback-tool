@@ -1,0 +1,35 @@
+# Learn more about configuring your app at https://shopify.dev/docs/apps/tools/cli/configuration
+
+client_id = "fdb53bf01dc8045acd12d088582f154b"
+name = "checkout-survey"
+application_url = "https://understand-fine-becomes-pace.trycloudflare.com"
+embedded = true
+
+[webhooks]
+api_version = "2026-01"
+
+[app_proxy]
+url = "https://understand-fine-becomes-pace.trycloudflare.com/app/questions"
+subpath = "questions"
+prefix = "apps"
+
+[access_scopes]
+# Learn more at https://shopify.dev/docs/apps/tools/cli/configuration#access_scopes
+scopes = "read_orders,read_products"
+optional_scopes = [ ]
+use_legacy_install_flow = false
+
+[auth]
+redirect_urls = [
+  "https://understand-fine-becomes-pace.trycloudflare.com/auth/callback",
+  "https://understand-fine-becomes-pace.trycloudflare.com/auth/shopify/callback",
+  "https://understand-fine-becomes-pace.trycloudflare.com/api/auth/callback"
+]
+
+
+[build]
+automatically_update_urls_on_dev = true
+
+name = "checkout-survey"
+type = "checkout_ui_extension"
+

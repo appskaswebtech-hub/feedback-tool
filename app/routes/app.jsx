@@ -24,6 +24,7 @@ export default function App() {
           </Link>
           <Link to="/app/manage">Manage Feedbacks</Link>
           <Link to="/app/visualize">Visualization</Link>
+          <Link to="/app/billing">Upgrade your plan</Link>
         </NavMenu>
         <Outlet />
       </AppProvider>
