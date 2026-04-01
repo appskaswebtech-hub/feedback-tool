@@ -121,11 +121,9 @@ export const action = async ({ request }) => {
         variables: {
           name: planKey,
 
-          // ✅ THE FIX — uses Shopify Admin URL, never changes
-          // tunnel URL is irrelevant here
+          // ✅ Uses Shopify Admin URL — tunnel URL is irrelevant here
           returnUrl: `https://${shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing-return`,
 
-          // trialDays: selectedPlan.trialDays,
           trialDays: 0,
           test:      true, // ← set false in production
           lineItems: [
@@ -146,7 +144,7 @@ export const action = async ({ request }) => {
     );
 
     const responseData = await response.json();
-    const { confirmationUrl, userErrors, appSubscription } =
+    const { confirmationUrl, userErrors } =
       responseData.data?.appSubscriptionCreate ?? {};
 
     if (userErrors?.length > 0) {
@@ -164,8 +162,8 @@ export const action = async ({ request }) => {
       );
     }
 
-    await updateShopPlan(shop, planKey, appSubscription?.id ?? null);
-
+    // ✅ DO NOT update DB here — wait for payment confirmation
+    // DB is updated in app.billing-return.jsx after Shopify redirects back
     return json({ confirmationUrl });
 
   } catch (err) {
@@ -287,8 +285,6 @@ export default function BillingPage() {
                       </Text>
                     )}
                   </Box>
-
-
                 </div>
 
                 {/* Features */}
@@ -344,8 +340,7 @@ export default function BillingPage() {
         {/* Footer */}
         <Box paddingBlockEnd="400">
           <Text alignment="center" tone="subdued" variant="bodySm">
-            Cancel anytime from
-            your Shopify admin. Billed in USD.
+            Cancel anytime from your Shopify admin. Billed in USD.
           </Text>
         </Box>
 

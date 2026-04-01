@@ -34,6 +34,7 @@ const QUESTION_LIMITS = {
 
 function ProductReview() {
   const SHOPIFY_LOCAL_URL = 'https://quiz.kaswebtechsolutions.com';
+  // const SHOPIFY_LOCAL_URL = 'https://guidance-supply-nyc-trucks.trycloudflare.com';
   const api      = useApi();
   const id       = api.orderConfirmation.current.order.id;
   const orderId  = id.match(/\d+/g).pop();
@@ -73,7 +74,7 @@ function ProductReview() {
 
       if (response.ok && data?.plan) {
         const plan  = data.plan.name ?? "free";
-        const limit = QUESTION_LIMITS[plan] ?? 1; // null = unlimited
+        const limit = plan in QUESTION_LIMITS ? QUESTION_LIMITS[plan] : 1;
         setPlanName(plan);
         setQuestionLimit(limit);
         console.log(`[checkout] Plan: ${plan}, question limit: ${limit ?? '∞'}`);
