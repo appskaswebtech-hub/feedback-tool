@@ -26,17 +26,22 @@ model Session {
 }
 
 model Survey {
-  id               Int       @id @default(autoincrement())
-  shop             String    // Shop domain (mystore.myshopify.com)
+  id               Int        @id @default(autoincrement())
+  shop             String
   title            String
-  isFrenchVersion  Boolean   @default(false)
+  isFrenchVersion  Boolean    @default(false)           // kept for backward-compat
+
+  // ✅ NEW — supports "default" | "french" | "spanish" | "italian"
+  language         String     @default("default")
+
   surveyId         Int?
   questions        Question[]
-  createdAt        DateTime  @default(now())
-  updatedAt        DateTime  @updatedAt
+  createdAt        DateTime   @default(now())
+  updatedAt        DateTime   @updatedAt
 
-  @@unique([shop, title]) // Unique title per shop
-  @@index([shop]) // Index for faster shop queries
+  @@unique([shop, title])
+  @@index([shop])
+  @@index([shop, language])   // ✅ NEW index — speeds up per-language lookups
 }
 
 model Question {

@@ -202,6 +202,29 @@ export default function BillingPage() {
       }}
     >
       <BlockStack gap="500">
+        <InlineStack align="end">
+          <div style={{ minWidth: 200 }}>
+            <Select
+              label=""
+              labelHidden
+              options={[
+                { label: "🌐 Default (English)", value: "default" },
+                { label: "🇫🇷 French", value: "french" },
+                { label: "🇪🇸 Spanish", value: "spanish" },
+                { label: "🇮🇹 Italian", value: "italian" },
+                { label: "🇩🇪 German", value: "german" },
+              ]}
+              value={uiLanguage}
+              onChange={(value) => {
+                setSearchParams((prev) => {
+                  if (value === "default") prev.delete("lang");
+                  else prev.set("lang", value);
+                  return prev;
+                });
+              }}
+            />
+          </div>
+        </InlineStack>
 
         {/* Error Banner */}
         {actionData?.error && (

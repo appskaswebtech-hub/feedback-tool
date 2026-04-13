@@ -26,21 +26,38 @@ const SurveyBarChart = ({ surveyData, language }) => {
     };
 
     // Filter the survey data based on the selected language (English or French)
-    const filteredSurveyData = surveyData.filter(
-        (survey) =>
-            (language === "en" && !survey.isFrenchVersion) ||
-            (language === "fr" && survey.isFrenchVersion)
-    );
+    // const filteredSurveyData = surveyData.filter((survey) => {
+    //     if (language === "en") {
+    //         return !survey.isFrenchVersion && !survey.isItalianVersion;
+    //     }
+
+    //     if (language === "fr") {
+    //         return survey.isFrenchVersion === true;
+    //     }
+
+    //     if (language === "it") {
+    //         return survey.isItalianVersion === true;
+    //     }
+
+    //     return false;
+    // });
 
     return (
         <div>
-            {filteredSurveyData.map((survey, surveyIndex) => {
+            {surveyData.map((survey, surveyIndex) => {
                 // Filter out questions with only "Other" answers
                 const validQuestions = survey.questions.filter((question) => {
                     // Filter out answers that start with "Other"
-                    const filteredAnswers = question.answersCount.filter(
-                        (ans) => !ans.answer.toLowerCase().startsWith("other")
-                    );
+                    const filteredAnswers = question.answersCount.filter((ans) => {
+                        const value = ans.answer.toLowerCase();
+
+                        return (
+                            !value.startsWith("other") &&
+                            !value.startsWith("autre") &&
+                            !value.startsWith("altro") &&
+                            !value.startsWith("otro")
+                        );
+                    });
                     return filteredAnswers.length > 0; // Keep only questions with valid answers
                 });
 
@@ -68,28 +85,45 @@ const SurveyBarChart = ({ surveyData, language }) => {
                             }
 
                             if (question.isConditional) {
-                                // Get "Yes" count
-                                const yesAnswer = question.answersCount.find(
-                                    (ans) => language === "en"
-                                        ? ans.answer.toLowerCase() === "yes"
-                                        : ans.answer.toLowerCase() === "yes"
+                                const yesLabels = ["yes", "oui", "si", "sí"];
+                                const noLabels = ["no", "non"];
+
+                                const yesAnswer = question.answersCount.find((ans) =>
+                                    yesLabels.includes(ans.answer.toLowerCase())
                                 );
-                                const noAnswer = question.answersCount.find(
-                                    (ans) => language === "en"
-                                        ? ans.answer.toLowerCase() === "no"
-                                        : ans.answer.toLowerCase() === "no"
+
+                                const noAnswer = question.answersCount.find((ans) =>
+                                    noLabels.includes(ans.answer.toLowerCase())
                                 );
 
                                 const yesCount = yesAnswer ? yesAnswer.count : 0;
                                 const noCount = noAnswer ? noAnswer.count : 0;
 
-                                // Construct conditional data
                                 chartData = [
-                                    { answer: "Yes", count: yesCount },
-                                    { answer: "No", count: noCount },
+                                    {
+                                        answer:
+                                            language === "fr"
+                                                ? "Oui"
+                                                : language === "it"
+                                                    ? "Sì"
+                                                    : language === "es"
+                                                        ? "Sí"
+                                                        : "Yes",
+                                        count: yesCount,
+                                    },
+                                    {
+                                        answer:
+                                            language === "fr"
+                                                ? "Non"
+                                                : language === "it"
+                                                    ? "No"
+                                                    : language === "es"
+                                                        ? "No"
+                                                        : "No",
+                                        count: noCount,
+                                    },
                                 ];
                             } else {
-                                // Use the filtered answers for the chart data
                                 chartData = filteredAnswers;
                             }
 
@@ -136,8 +170,15 @@ const SurveyBarChart = ({ surveyData, language }) => {
                         {/* If there isn't any Survey Data */}
                         {currentQuestions.length === 0 ? (
                             <EmptyState
-                                heading={language === 'en' ? "No English Survey Found" : "No French Survey Found"}
-                                image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+                                heading={
+                                    language === 'en'
+                                        ? 'No English Survey Found'
+                                        : language === 'fr'
+                                            ? 'No French Survey Found'
+                                            : language === 'it'
+                                                ? 'No Italian Survey Found'
+                                                : 'No Spanish Survey Found'
+                                } image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
                             >
                             </EmptyState>
 

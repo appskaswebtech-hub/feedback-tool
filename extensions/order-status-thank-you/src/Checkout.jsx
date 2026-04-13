@@ -32,15 +32,94 @@ const QUESTION_LIMITS = {
   advanced: null, // null = unlimited
 };
 
+// ─── Language config ───────────────────────────────────────────
+// Maps ISO 639-1 codes → survey `language` field value
+const LANG_CODE_MAP = {
+  fr: 'french',
+  es: 'spanish',
+  it: 'italian',
+  de: 'german',   // ← ADD
+};
+
+// ─── UI Translations for checkout labels ──────────────────────
+const UI = {
+  questionOf: {
+    en: (cur, total) => `Question ${cur} of ${total}`,
+    fr: (cur, total) => `Question ${cur} sur ${total}`,
+    es: (cur, total) => `Pregunta ${cur} de ${total}`,
+    it: (cur, total) => `Domanda ${cur} di ${total}`,
+    de: (cur, total) => `Frage ${cur} von ${total}`,   // ← ADD
+  },
+  enterSomething: {
+    en: 'Your answer',
+    fr: 'Votre réponse',
+    es: 'Tu respuesta',
+    it: 'La tua risposta',
+    de: 'Ihre Antwort',   // ← ADD
+  },
+  enterResponse: {
+    en: 'Enter your response',
+    fr: 'Entrez votre réponse',
+    es: 'Ingresa tu respuesta',
+    it: 'Inserisci la tua risposta',
+    de: 'Antwort eingeben',   // ← ADD
+  },
+  save: {
+    en: 'SAVE',
+    fr: 'ENREGISTRER',
+    es: 'GUARDAR',
+    it: 'SALVA',
+    de: 'SPEICHERN',   // ← ADD
+  },
+  submit: {
+    en: 'SUBMIT',
+    fr: 'ENVOYER',
+    es: 'ENVIAR',
+    it: 'INVIA',
+    de: 'ABSENDEN',   // ← ADD
+  },
+  thanksHeading: {
+    en: 'Thanks for your feedback!',
+    fr: 'Merci pour votre retour !',
+    es: '¡Gracias por tu opinión!',
+    it: 'Grazie per il tuo feedback!',
+    de: 'Danke für Ihr Feedback!',   // ← ADD
+  },
+  thanksSubtitle: {
+    en: 'Your response has been submitted.',
+    fr: 'Votre réponse a été soumise.',
+    es: 'Tu respuesta ha sido enviada.',
+    it: 'La tua risposta è stata inviata.',
+    de: 'Ihre Antwort wurde übermittelt.',   // ← ADD
+  },
+};
+
+// Helper: get translated string
+const t = (key, lang, ...args) => {
+  const entry = UI[key];
+  if (!entry) return key;
+  const fn = entry[lang] ?? entry['en'];
+  return typeof fn === 'function' ? fn(...args) : fn;
+};
+
+// ─── Main Component ───────────────────────────────────────────
 function ProductReview() {
+  // const SHOPIFY_LOCAL_URL = 'https://overhead-afford-doors-caring.trycloudflare.com';
   const SHOPIFY_LOCAL_URL = 'https://quiz.kaswebtechsolutions.com';
-  // const SHOPIFY_LOCAL_URL = 'https://guidance-supply-nyc-trucks.trycloudflare.com';
   const api      = useApi();
   const id       = api.orderConfirmation.current.order.id;
   const orderId  = id.match(/\d+/g).pop();
   const shop     = api.shop.myshopifyDomain;
   const userEmail = api.buyerIdentity?.email?.current;
   const settings  = useSettings();
+
+  // ── Detect buyer language (2-char ISO code: 'en', 'fr', 'es', 'it') ──
+  const rawLang  = api?.localization?.language?.current?.isoCode?.slice(0, 2)?.toLowerCase() || 'en';
+  const lang = ['en', 'fr', 'es', 'it', 'de'].includes(rawLang) ? rawLang : 'en';
+  // const lang     = 'it';
+
+  // Map lang code → survey language field value ('default', 'french', 'spanish', 'italian')
+  const surveyLang = LANG_CODE_MAP[lang] ?? 'default';
 
   const [quizData, setQuizData]         = useState(null);
   const [loading, setLoading]           = useState(false);
@@ -54,15 +133,15 @@ function ProductReview() {
   const [textInput, setTextInput]       = useState('');
   const [submitted, setSubmitted]       = useState(false);
 
-  // ✅ Plan state
-  const [planName, setPlanName]         = useState("free");
-  const [questionLimit, setQuestionLimit] = useState(1); // default to free
+  // Plan state
+  const [planName, setPlanName]         = useState('free');
+  const [questionLimit, setQuestionLimit] = useState(1);
   const [planLoading, setPlanLoading]   = useState(true);
 
   const [{ data: productReviewed, loading: productReviewedLoading }] =
     useStorageState('product-reviewed');
 
-  // ─── 1. Fetch active plan ────────────────────────────────────
+  // ─── 1. Fetch active plan ─────────────────────────────────────
   const fetchActivePlan = async () => {
     setPlanLoading(true);
     try {
@@ -71,43 +150,37 @@ function ProductReview() {
         { method: 'GET' }
       );
       const data = await response.json();
-
       if (response.ok && data?.plan) {
-        const plan  = data.plan.name ?? "free";
+        const plan  = data.plan.name ?? 'free';
         const limit = plan in QUESTION_LIMITS ? QUESTION_LIMITS[plan] : 1;
         setPlanName(plan);
         setQuestionLimit(limit);
         console.log(`[checkout] Plan: ${plan}, question limit: ${limit ?? '∞'}`);
       } else {
-        // Default to free if plan fetch fails
         console.error('[checkout] Plan fetch failed, defaulting to free');
-        setPlanName("free");
+        setPlanName('free');
         setQuestionLimit(1);
       }
     } catch (error) {
       console.error('[checkout] Error fetching plan:', error);
-      // Fail safe → free plan limits
-      setPlanName("free");
+      setPlanName('free');
       setQuestionLimit(1);
     } finally {
       setPlanLoading(false);
     }
   };
 
-  useEffect(() => {
-    fetchActivePlan();
-  }, []);
+  useEffect(() => { fetchActivePlan(); }, []);
 
-  // ─── 2. Fetch survey title ───────────────────────────────────
+  // ─── 2. Fetch survey title ────────────────────────────────────
+  // Pass `lang` so server can return the title for the right language survey
   const fetchSurveyTitle = async () => {
     try {
-      const lang = api?.localization?.language?.current?.isoCode.slice(0, 2) || 'en';
       const response = await fetch(
         `${SHOPIFY_LOCAL_URL}/app/survey?shop=${encodeURIComponent(shop)}&lang=${lang}`,
         { method: 'GET' }
       );
       const data = await response.json();
-
       if (response.ok && data?.surveyTitle) {
         setSurveyTitle(data.surveyTitle);
       } else {
@@ -120,17 +193,13 @@ function ProductReview() {
     }
   };
 
-  useEffect(() => {
-    fetchSurveyTitle();
-  }, []);
+  useEffect(() => { fetchSurveyTitle(); }, []);
 
-  // ─── 3. Fetch quiz data ──────────────────────────────────────
+  // ─── 3. Fetch quiz data ───────────────────────────────────────
   const fetchQuizData = async () => {
     setLoading(true);
     try {
-      const lang      = api?.localization?.language?.current?.isoCode.slice(0, 2);
-      const isFrench  = lang === 'fr';
-      const response  = await fetch(
+      const response = await fetch(
         `${SHOPIFY_LOCAL_URL}/app/questions?shop=${encodeURIComponent(shop)}`,
         { method: 'GET' }
       );
@@ -138,30 +207,54 @@ function ProductReview() {
 
       if (response.ok) {
         let quiz;
-        if (isFrench) {
-          quiz = data.surveys.find(s => s.isFrenchVersion === true);
+
+        if (lang === 'en') {
+          // English → find the default (non-localised) survey by title
+          quiz = data.surveys.find(
+            (s) => (s.language === 'default' || (!s.language && !s.isFrenchVersion))
+                   && s.title === survey_title
+          );
         } else {
-          quiz = data.surveys.find(s => s.title === survey_title);
+          // French / Spanish / Italian → match by `language` field first
+          quiz = data.surveys.find((s) => s.language === surveyLang);
+
+          // Backward-compat: if language field missing, fall back to isFrenchVersion for French
+          if (!quiz && lang === 'fr') {
+            quiz = data.surveys.find((s) => s.isFrenchVersion === true);
+          }
         }
 
         if (quiz) {
-          // ✅ Slice questions based on plan limit
-          // questionLimit === null means unlimited (advanced plan)
+          // Slice questions based on plan limit
           const limitedQuiz = {
             ...quiz,
             questions: questionLimit === null
-              ? quiz.questions                          // unlimited
-              : quiz.questions.slice(0, questionLimit), // slice to limit
+              ? quiz.questions
+              : quiz.questions.slice(0, questionLimit),
           };
-
           setQuizData(limitedQuiz);
           console.log(
             `[checkout] Loaded ${limitedQuiz.questions.length} question(s) ` +
-            `(plan: ${planName}, limit: ${questionLimit ?? '∞'})`
+            `(lang: ${lang}, surveyLang: ${surveyLang}, plan: ${planName}, limit: ${questionLimit ?? '∞'})`
           );
         } else {
-          console.error(`[checkout] No quiz found — shop: ${shop}, title: ${survey_title}`);
-          setFetchError(true);
+          // No survey for this language → fall back to default English survey
+          console.warn(`[checkout] No survey found for language "${surveyLang}", falling back to default`);
+          const fallback = data.surveys.find(
+            (s) => s.language === 'default' || (!s.language && !s.isFrenchVersion)
+          );
+          if (fallback) {
+            const limitedFallback = {
+              ...fallback,
+              questions: questionLimit === null
+                ? fallback.questions
+                : fallback.questions.slice(0, questionLimit),
+            };
+            setQuizData(limitedFallback);
+          } else {
+            console.error(`[checkout] No survey found at all for shop: ${shop}`);
+            setFetchError(true);
+          }
         }
       } else {
         console.error('[checkout] Error fetching quiz data:', data.error);
@@ -175,19 +268,19 @@ function ProductReview() {
     }
   };
 
-  // ✅ Wait for both survey_title AND plan to be loaded before fetching quiz
+  // Wait for both survey_title AND plan before fetching quiz
   useLayoutEffect(() => {
     if (!survey_title || planLoading) return;
     fetchQuizData();
   }, [survey_title, planLoading]);
 
-  // ─── Submit helpers ──────────────────────────────────────────
+  // ─── Submit helpers ───────────────────────────────────────────
   async function handleSubmit(updateAnswers = answers) {
     setLoading(true);
     try {
       const params = new URLSearchParams({
         shop,
-        shopDomain: shop,
+        shopDomain:  shop,
         email:       userEmail,
         surveyTitle: survey_title,
         orderId,
@@ -229,11 +322,10 @@ function ProductReview() {
     }
   }
 
-  // ─── Guards ──────────────────────────────────────────────────
-  if (fetchError) return null;
+  // ─── Guards ───────────────────────────────────────────────────
+  if (fetchError)                              return null;
   if (productReviewed || productReviewedLoading) return null;
 
-  // ── Show loading skeleton while plan or quiz is loading ──────
   if (planLoading || (loading && !quizData)) {
     return (
       <View border="base" padding="base" borderRadius="base">
@@ -250,13 +342,14 @@ function ProductReview() {
   const IS_CHECKBOX     = currentQuestion?.isMultiChoice === true;
   const IS_RADIO        = currentQuestion?.isSingle === true;
 
-  // ─── Navigation ──────────────────────────────────────────────
+  // ─── Navigation ───────────────────────────────────────────────
   const handleNext = (prebuiltAnswers = null) => {
-    const answersToUse = prebuiltAnswers || answers;
-    const currentQ     = quizData.questions[currentQuestionIndex];
+    const answersToUse  = prebuiltAnswers || answers;
+    const currentQ      = quizData.questions[currentQuestionIndex];
     const currentAnswer = answersToUse[currentQuestionIndex]?.answer?.toLowerCase();
 
-    if (currentQ.isConditional && (currentAnswer === 'no' || currentAnswer === 'non')) {
+    // Conditional "No / Non / No (es) / No (it)" → stop
+    if (currentQ.isConditional && ['no', 'non', 'nein'].includes(currentAnswer)) {
       setShouldProceed(false);
       handleSubmit(answersToUse);
       return;
@@ -264,18 +357,18 @@ function ProductReview() {
 
     if (currentQuestionIndex < quizData.questions.length - 1) {
       nextSubmit(answersToUse);
-      setCurrentQuestionIndex(prev => prev + 1);
+      setCurrentQuestionIndex((prev) => prev + 1);
       setRadioValue('');
       setCheckboxValues([]);
       setTextInput('');
     }
   };
 
-  // ─── Radio handler ────────────────────────────────────────────
+  // ─── Radio handler ─────────────────────────────────────────────
   const handleRadioChange = (selectedValue) => {
     const normalizedValue = Array.isArray(selectedValue) ? selectedValue[0] : selectedValue;
     const selectedOption  = currentQuestion.answers.find(
-      opt => opt.id === parseInt(normalizedValue)
+      (opt) => opt.id === parseInt(normalizedValue)
     );
     if (!selectedOption) return;
 
@@ -294,7 +387,7 @@ function ProductReview() {
     }
   };
 
-  // ─── Checkbox handler ─────────────────────────────────────────
+  // ─── Checkbox handler ──────────────────────────────────────────
   const handleCheckboxChange = (selectedValues) => {
     const valuesArray = Array.isArray(selectedValues)
       ? selectedValues
@@ -302,10 +395,10 @@ function ProductReview() {
 
     setCheckboxValues(valuesArray);
 
-    const selectedOptions = currentQuestion.answers.filter(opt =>
+    const selectedOptions = currentQuestion.answers.filter((opt) =>
       valuesArray.includes(opt.id.toString())
     );
-    const formattedAnswers = selectedOptions.map(opt =>
+    const formattedAnswers = selectedOptions.map((opt) =>
       opt.haveTextBox && textInput.trim() !== '' ? `other(${textInput})` : opt.text
     );
 
@@ -319,17 +412,17 @@ function ProductReview() {
     nextSubmit(updatedAnswers);
   };
 
-  // ─── Text input handler ───────────────────────────────────────
+  // ─── Text input handler ────────────────────────────────────────
   const handleTextInputChange = (value) => {
     setTextInput(value);
-    setAnswers(prevAnswers => {
+    setAnswers((prevAnswers) => {
       const updatedAnswers  = [...prevAnswers];
       const activeIds       = IS_CHECKBOX ? checkboxValues : [radioValue];
-      const selectedOptions = currentQuestion.answers.filter(opt =>
+      const selectedOptions = currentQuestion.answers.filter((opt) =>
         activeIds.includes(opt.id.toString())
       );
       const formattedAnswer = selectedOptions.length > 0
-        ? selectedOptions.map(opt =>
+        ? selectedOptions.map((opt) =>
             opt.haveTextBox ? `other(${value})` : opt.text
           ).join(',')
         : `other(${value})`;
@@ -346,11 +439,11 @@ function ProductReview() {
   const buildHaveTextBoxAnswers = (currentTextInput) => {
     const updatedAnswers  = [...answers];
     const activeIds       = IS_CHECKBOX ? checkboxValues : [radioValue];
-    const selectedOptions = currentQuestion.answers.filter(opt =>
+    const selectedOptions = currentQuestion.answers.filter((opt) =>
       activeIds.includes(opt.id.toString())
     );
     const formattedAnswer = selectedOptions.length > 0
-      ? selectedOptions.map(opt =>
+      ? selectedOptions.map((opt) =>
           opt.haveTextBox ? `other(${currentTextInput})` : opt.text
         ).join(',')
       : `other(${currentTextInput})`;
@@ -363,13 +456,13 @@ function ProductReview() {
     return updatedAnswers;
   };
 
-  // ─── Submitted screen ─────────────────────────────────────────
+  // ─── Submitted / stopped screen ───────────────────────────────
   if (!shouldProceed || submitted) {
     return (
       <View border="base" padding="base" borderRadius="base">
         <BlockStack>
-          <Heading>Thanks for your feedback!</Heading>
-          <Text>Your response has been submitted</Text>
+          <Heading>{t('thanksHeading', lang)}</Heading>
+          <Text>{t('thanksSubtitle', lang)}</Text>
         </BlockStack>
       </View>
     );
@@ -378,10 +471,10 @@ function ProductReview() {
   const selectedRadioHasTextBox =
     IS_RADIO &&
     currentQuestion.answers.some(
-      opt => opt.haveTextBox && radioValue === opt.id.toString()
+      (opt) => opt.haveTextBox && radioValue === opt.id.toString()
     );
 
-  // ─── Main render ──────────────────────────────────────────────
+  // ─── Main render ───────────────────────────────────────────────
   return (
     <View border="base" padding="base">
       <BlockStack>
@@ -391,28 +484,28 @@ function ProductReview() {
           {currentQuestion ? currentQuestion.text : <SkeletonText />}
         </Heading>
 
-        {/* ✅ Progress indicator — shows x/total based on plan limit */}
+        {/* Progress indicator */}
         {quizData && quizData.questions.length > 1 && (
           <Text size="small" appearance="subdued">
-            Question {currentQuestionIndex + 1} of {quizData.questions.length}
+            {t('questionOf', lang, currentQuestionIndex + 1, quizData.questions.length)}
           </Text>
         )}
 
         {currentQuestion ? (
           <>
-            {/* Text box question */}
+            {/* ── Text box question ── */}
             {currentQuestion.isTextBox ? (
               <BlockStack>
                 <TextField
                   name={`quiz-response-${currentQuestionIndex}`}
-                  label="Enter Something!"
+                  label={t('enterSomething', lang)}
                   value={textInput}
                   onChange={handleTextInputChange}
                 />
               </BlockStack>
 
             ) : IS_CHECKBOX ? (
-              /* Multi-choice question */
+              /* ── Multi-choice question ── */
               <ChoiceList
                 key={`checkbox-${currentQuestionIndex}`}
                 name={`quiz-response-${currentQuestionIndex}`}
@@ -429,7 +522,7 @@ function ProductReview() {
                           {checkboxValues.includes(option.id.toString()) && (
                             <TextField
                               name={`quiz-response-${currentQuestionIndex}-${optIndex}`}
-                              label="Enter your response"
+                              label={t('enterResponse', lang)}
                               value={textInput}
                               onChange={handleTextInputChange}
                             />
@@ -444,7 +537,7 @@ function ProductReview() {
               </ChoiceList>
 
             ) : (
-              /* Single / conditional question */
+              /* ── Single / conditional question ── */
               <ChoiceList
                 key={`radio-${currentQuestionIndex}`}
                 name={`quiz-response-${currentQuestionIndex}`}
@@ -461,7 +554,7 @@ function ProductReview() {
                             <InlineStack spacing="base">
                               <TextField
                                 name={`quiz-response-${currentQuestionIndex}-${optIndex}`}
-                                label="Enter your response"
+                                label={t('enterResponse', lang)}
                                 value={textInput}
                                 onChange={handleTextInputChange}
                               />
@@ -473,7 +566,7 @@ function ProductReview() {
                                   handleNext(freshAnswers);
                                 }}
                               >
-                                SAVE
+                                {t('save', lang)}
                               </Button>
                             </InlineStack>
                           )}
@@ -487,7 +580,7 @@ function ProductReview() {
               </ChoiceList>
             )}
 
-            {/* Navigation buttons */}
+            {/* ── Navigation buttons ── */}
             <BlockStack>
               {currentQuestionIndex < quizData.questions.length - 1 ? (
                 IS_CHECKBOX ? (
@@ -496,11 +589,11 @@ function ProductReview() {
                     onPress={() => handleNext()}
                     disabled={checkboxValues.length === 0}
                   >
-                    SAVE
+                    {t('save', lang)}
                   </Button>
                 ) : currentQuestion.isTextBox ? (
                   <Button kind="secondary" onPress={() => handleNext()}>
-                    SAVE
+                    {t('save', lang)}
                   </Button>
                 ) : selectedRadioHasTextBox ? (
                   null
@@ -510,7 +603,7 @@ function ProductReview() {
                     onPress={() => handleNext()}
                     disabled={!radioValue}
                   >
-                    SAVE
+                    {t('save', lang)}
                   </Button>
                 )
               ) : (
@@ -519,7 +612,7 @@ function ProductReview() {
                   onPress={() => handleSubmit()}
                   loading={loading}
                 >
-                  SUBMIT
+                  {t('submit', lang)}
                 </Button>
               )}
             </BlockStack>
@@ -536,7 +629,7 @@ function ProductReview() {
   );
 }
 
-// ─── Storage hook ─────────────────────────────────────────────
+// ─── Storage hook ──────────────────────────────────────────────
 function useStorageState(key) {
   const storage = useStorage();
   const [data, setData]       = useState();
@@ -558,4 +651,3 @@ function useStorageState(key) {
 
   return [{ data, loading }, setStorage];
 }
-

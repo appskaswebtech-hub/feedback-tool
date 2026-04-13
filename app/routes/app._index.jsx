@@ -1,16 +1,13 @@
 // app/routes/app._index.jsx
 
-import { json, redirect } from "@remix-run/node";
-import { useLoaderData, Form, useActionData, useNavigate, useNavigation } from "@remix-run/react";
+import { json } from "@remix-run/node";
+import { useLoaderData, useNavigate, useSearchParams } from "@remix-run/react";
 import { PrismaClient } from "@prisma/client";
-import { useState } from "react";
+import { useState, useCallback } from "react";
 import {
   Page,
   Card,
-  FormLayout,
-  TextField,
   Button,
-  Checkbox,
   BlockStack,
   Text,
   Box,
@@ -26,941 +23,460 @@ import {
   Icon,
   EmptyState,
   Spinner,
+  Select,
 } from "@shopify/polaris";
 import {
   DeleteIcon,
   EditIcon,
   PlusCircleIcon,
-  SaveIcon,
-  ToggleOffIcon,
-  ToggleOnIcon,
   ViewIcon,
   QuestionCircleIcon,
-  CheckCircleIcon,
   AlertCircleIcon,
 } from "@shopify/polaris-icons";
 import { authenticate } from "../shopify.server";
 import { getShopPlanFromDB } from "../utils/planUtils";
+import { getT, LANG_KEY_TO_ISO } from "../utils/translations";
 
 const prisma = new PrismaClient();
 
-// ─── Question limits per plan (server-side only) ──────────────
-const QUESTION_LIMITS = {
-  free:     1,
-  pro:      5,
-  advanced: Infinity, // ✅ Infinity only used server-side
+const QUESTION_LIMITS = { free: 1, pro: 5, advanced: Infinity };
+const PLAN_LABELS     = { free: "Free", pro: "Pro", advanced: "Advanced" };
+
+const LANGUAGES = {
+  default: { label: "Default (English)", flag: "🌐", badge: "info",    isoCode: "en" },
+  french:  { label: "French",            flag: "🇫🇷", badge: "magic",   isoCode: "fr" },
+  spanish: { label: "Spanish",           flag: "🇪🇸", badge: "warning", isoCode: "es" },
+  italian: { label: "Italian",           flag: "🇮🇹", badge: "success", isoCode: "it" },
+  german:  { label: "German",            flag: "🇩🇪", badge: "info",    isoCode: "de" },
 };
 
-const PLAN_LABELS = {
-  free:     "Free",
-  pro:      "Pro",
-  advanced: "Advanced",
-};
+const LANGUAGE_DROPDOWN_OPTIONS = Object.entries(LANGUAGES).map(([value, { flag, label }]) => ({
+  label: `${flag}  ${label}`,
+  value,
+}));
+
+const getLang = (survey) =>
+  survey.language ?? (survey.isFrenchVersion ? "french" : "default");
 
 // ─── LOADER ───────────────────────────────────────────────────
 export const loader = async ({ request }) => {
   const { session } = await authenticate.admin(request);
   const shop = session.shop;
 
-  const shopPlan      = await getShopPlanFromDB(shop);
-  const planName      = shopPlan.name ?? "free";
-  const rawLimit      = QUESTION_LIMITS[planName] ?? 1;
+  const shopPlan = await getShopPlanFromDB(shop);
+  const planName = shopPlan.name ?? "free";
+  const rawLimit = QUESTION_LIMITS[planName] ?? 1;
 
   const surveys = await prisma.survey.findMany({
     where: { shop },
-    include: {
-      questions: {
-        include: { answers: true },
-      },
-    },
+    include: { questions: { include: { answers: true } } },
   });
 
-  const hasReachedLimit = surveys.length >= 2;
+  const MAX_SURVEYS   = Object.keys(LANGUAGES).length;
+  const usedLanguages = surveys.map((s) => getLang(s));
+  const totalQuestions = surveys.reduce((sum, s) => sum + (s.questions?.length || 0), 0);
+
+  let singleCount = 0, multiCount = 0, condCount = 0, textCount = 0;
+  surveys.forEach((s) =>
+    s.questions?.forEach((q) => {
+      if (q.isConditional) condCount++;
+      else if (q.isMultiChoice) multiCount++;
+      else if (q.isTextBox) textCount++;
+      else singleCount++;
+    })
+  );
 
   return json({
-    surveys,
-    hasReachedLimit,
-    shop,
-    planName,
-    // ✅ Infinity → null so JSON serialization works correctly
+    surveys, shop, planName,
     questionLimit: rawLimit === Infinity ? null : rawLimit,
+    maxSurveys: MAX_SURVEYS, usedLanguages, totalQuestions,
+    typeCounts: { singleCount, multiCount, condCount, textCount },
   });
-};
-
-// ─── ACTION ───────────────────────────────────────────────────
-export const action = async ({ request }) => {
-  const { session } = await authenticate.admin(request);
-  const shop = session.shop;
-
-  const formData        = await request.formData();
-  const surveyTitle     = formData.get("quizTitle");
-  const questions       = JSON.parse(formData.get("questions"));
-  const surveyIdValue   = formData.get("surveyId");
-  const surveyId        = surveyIdValue && surveyIdValue !== ""
-    ? parseInt(surveyIdValue)
-    : null;
-  const isFrenchVersion = formData.get("isFrenchVersion") === "true";
-  const frenchSurveyId  = formData.get("frenchSurveyId")
-    ? parseInt(formData.get("frenchSurveyId"))
-    : null;
-
-  // ✅ Check question limit — server-side uses Infinity safely
-  const shopPlan      = await getShopPlanFromDB(shop);
-  const planName      = shopPlan.name ?? "free";
-  const questionLimit = QUESTION_LIMITS[planName] ?? 1;
-
-  if (questionLimit !== Infinity && questions.length > questionLimit) {
-    return json({
-      error: `Your ${PLAN_LABELS[planName]} plan allows only ${questionLimit} question(s) per survey. You have ${questions.length}. Please upgrade your plan to add more questions.`,
-      limitReached: true,
-    }, { status: 403 });
-  }
-
-  // Validate survey title
-  if (!surveyTitle || surveyTitle.trim() === "") {
-    return json({ error: "Survey title is required." }, { status: 400 });
-  }
-
-  // Validate at least one question
-  if (!questions || questions.length === 0) {
-    return json({ error: "Survey must have at least one question." }, { status: 400 });
-  }
-
-  // Validate each question
-  for (let i = 0; i < questions.length; i++) {
-    const question = questions[i];
-    if (!question.text || question.text.trim() === "") {
-      return json({ error: `Question ${i + 1} must have text.` }, { status: 400 });
-    }
-    if (question.isMultiChoice || (!question.isTextBox && !question.isConditional)) {
-      if (!question.options || question.options.length === 0) {
-        return json({ error: `Question ${i + 1} must have at least one option.` }, { status: 400 });
-      }
-      for (let j = 0; j < question.options.length; j++) {
-        if (!question.options[j].text || question.options[j].text.trim() === "") {
-          return json({ error: `Question ${i + 1}, Option ${j + 1} must have text.` }, { status: 400 });
-        }
-      }
-    }
-  }
-
-  // Validate no duplicate isFrenchVersion
-  const existingSurveyWithSameType = await prisma.survey.findFirst({
-    where: {
-      shop,
-      isFrenchVersion,
-      NOT: surveyId ? { id: surveyId } : undefined,
-    },
-  });
-
-  if (existingSurveyWithSameType) {
-    return json({
-      error: isFrenchVersion
-        ? "You already have a French version survey. Please delete it first or uncheck the French version option."
-        : "You already have a non-French (default) version survey. Please delete it first or check the French version option.",
-    }, { status: 400 });
-  }
-
-  try {
-    if (!surveyId) {
-      const surveyCount = await prisma.survey.count({ where: { shop } });
-      if (surveyCount >= 2) {
-        return json({
-          error: "Maximum survey limit reached. You can only have 2 surveys (1 French + 1 Non-French).",
-        }, { status: 400 });
-      }
-    }
-
-    const questionData = questions.map((q) => ({
-      text:            q.text,
-      isMultiChoice:   q.isConditional ? false : q.isTextBox ? false : q.isMultiChoice || false,
-      isConditional:   q.isMultiChoice ? false : q.isTextBox ? false : q.isConditional || false,
-      isTextBox:       q.isConditional ? false : q.isMultiChoice ? false : q.isTextBox || false,
-      isSingle:        !q.isConditional && !q.isTextBox && !q.isMultiChoice,
-      conditionAnswer: null,
-      answers: {
-        create: q.isConditional
-          ? [{ text: "Yes", haveTextBox: false }, { text: "No", haveTextBox: false }]
-          : q.isTextBox
-          ? []
-          : q.options.map((o) => ({ text: o.text, haveTextBox: o.haveTextBox || false })),
-      },
-    }));
-
-    if (surveyId) {
-      const existingSurvey = await prisma.survey.findFirst({
-        where: { id: surveyId, shop },
-      });
-      if (!existingSurvey) {
-        return json({ error: "Survey not found or access denied." }, { status: 403 });
-      }
-      await prisma.answer.deleteMany({ where: { question: { surveyId } } });
-      await prisma.question.deleteMany({ where: { surveyId } });
-      await prisma.survey.update({
-        where: { id: surveyId },
-        data: { title: surveyTitle, shop, isFrenchVersion, surveyId: frenchSurveyId, questions: { create: questionData } },
-      });
-      console.log("Survey updated:", surveyId);
-    } else {
-      await prisma.survey.create({
-        data: { title: surveyTitle, shop, isFrenchVersion, surveyId: frenchSurveyId, questions: { create: questionData } },
-      });
-      console.log("Survey created");
-    }
-
-    return redirect("/app/");
-  } catch (error) {
-    console.error("Error saving survey:", error);
-    return json({ error: "Failed to save survey." }, { status: 500 });
-  }
 };
 
 // ─── COMPONENT ────────────────────────────────────────────────
-export default function Index() {
+export default function DashboardIndex() {
   const {
-    surveys,
-    hasReachedLimit,
-    shop,
-    planName,
-    questionLimit, // null = unlimited, number = limit
+    surveys, shop, planName, questionLimit,
+    maxSurveys, usedLanguages, totalQuestions, typeCounts,
   } = useLoaderData();
 
-  const actionData  = useActionData();
-  const navigate    = useNavigate();
-  const navigation  = useNavigation();
+  const navigate = useNavigate();
+  const [searchParams, setSearchParams] = useSearchParams();
 
-  const [surveyTitle, setSurveyTitle]   = useState("");
-  const [questions, setQuestions]       = useState([
-    { text: "", options: [{ text: "" }], isSingle: true },
-  ]);
-  const [activeSurvey, setActiveSurvey]             = useState(null);
-  const [modalOpen, setModalOpen]                   = useState(false);
+  // ── Read language from URL, default to "default" (English) ──
+  const uiLanguage = searchParams.get("lang") || "default";
+  const uiLangIso  = LANG_KEY_TO_ISO[uiLanguage] ?? "en";
+  const t          = getT(uiLangIso);
+
+  // Helper: build path that always carries the current lang param
+  const withLang = useCallback(
+    (path) => {
+      const sep = path.includes("?") ? "&" : "?";
+      return uiLanguage === "default" ? path : `${path}${sep}lang=${uiLanguage}`;
+    },
+    [uiLanguage],
+  );
+
+  const handleLanguageChange = useCallback(
+    (value) => {
+      setSearchParams((prev) => {
+        if (value === "default") { prev.delete("lang"); }
+        else { prev.set("lang", value); }
+        return prev;
+      });
+    },
+    [setSearchParams],
+  );
+
+  const limitLabel      = questionLimit === null ? "∞" : questionLimit;
+  const hasReachedLimit = surveys.length >= maxSurveys;
+
+  // Delete state
   const [isDeleteBannerVisible, setDeleteBannerVisible] = useState(false);
-  const [surveyToDelete, setSurveyToDelete]         = useState(null);
-  const [isFrenchVersion, setIsFrenchVersion]       = useState(false);
-  const [selectedSurveyId, setSelectedSurveyId]     = useState("");
-  const [validationError, setValidationError]       = useState("");
-  const [showValidationModal, setShowValidationModal] = useState(false);
-  const [isDeleting, setIsDeleting]                 = useState(false);
+  const [surveyToDelete, setSurveyToDelete]             = useState(null);
+  const [isDeleting, setIsDeleting]                     = useState(false);
 
-  const isSubmitting = navigation.state === "submitting" || navigation.state === "loading";
+  // View modal
+  const [activeSurvey, setActiveSurvey] = useState(null);
+  const [modalOpen, setModalOpen]       = useState(false);
 
-  const hasFrenchVersion    = surveys.some((s) => s.isFrenchVersion);
-  const hasNonFrenchVersion = surveys.some((s) => !s.isFrenchVersion);
-
-  // ✅ null = unlimited, number = has limit
-  const limitLabel       = questionLimit === null ? "∞" : questionLimit;
-  const hasReachedQLimit = questionLimit !== null && questions.length >= questionLimit;
-
-  const totalQuestions = surveys.reduce((sum, s) => sum + (s.questions?.length || 0), 0);
-
-  // ── Handlers ───────────────────────────────────────────────
-  const handleInputChange = (index, field, value) => {
-    const updatedQuestions = [...questions];
-    updatedQuestions[index][field] = value;
-    const q = updatedQuestions[index];
-    updatedQuestions[index].isSingle = !q.isConditional && !q.isTextBox && !q.isMultiChoice;
-    setQuestions(updatedQuestions);
-    if (validationError) { setValidationError(""); setShowValidationModal(false); }
-  };
-
-  const handleAddQuestion = () => {
-    // ✅ null = unlimited, never block
-    if (hasReachedQLimit) return;
-    setQuestions([...questions, { text: "", options: [{ text: "" }], isSingle: true }]);
-  };
-
-  const handleRemoveQuestion = (index) =>
-    setQuestions(questions.filter((_, idx) => idx !== index));
-
-  const handleAddOption = (questionIndex) => {
-    const updatedQuestions = [...questions];
-    updatedQuestions[questionIndex].options.push({ text: "" });
-    setQuestions(updatedQuestions);
-  };
-
-  const handleRemoveOption = (questionIndex, optionIndex) => {
-    const updatedQuestions = [...questions];
-    updatedQuestions[questionIndex].options =
-      updatedQuestions[questionIndex].options.filter((_, idx) => idx !== optionIndex);
-    setQuestions(updatedQuestions);
-  };
-
-  const handleViewSurvey = (survey) => { setActiveSurvey(survey); setModalOpen(true); };
-  const handleCloseModal = () => { setModalOpen(false); setTimeout(() => setActiveSurvey(null), 300); };
-
-  const handleEditSurvey = (survey) => {
-    setSurveyTitle(survey.title);
-    setActiveSurvey(survey);
-    setIsFrenchVersion(survey.isFrenchVersion || false);
-    setSelectedSurveyId(survey.surveyId ? survey.surveyId.toString() : "");
-    setValidationError(""); setShowValidationModal(false);
-    setQuestions(survey.questions.map((q) => ({
-      text:          q.text,
-      isConditional: q.isConditional || false,
-      isMultiChoice: q.isMultiChoice || false,
-      isTextBox:     q.isTextBox || false,
-      isSingle:      !q.isConditional && !q.isMultiChoice && !q.isTextBox,
-      options: q.isTextBox
-        ? [{ text: "" }]
-        : q.answers.map((a) => ({ text: a.text, haveTextBox: a.haveTextBox || false })),
-    })));
-  };
-
-  const handleDeleteSurvey = (surveyId) => {
-    setSurveyToDelete(surveyId);
-    setDeleteBannerVisible(true);
-  };
+  const handleViewSurvey   = (s) => { setActiveSurvey(s); setModalOpen(true); };
+  const handleCloseModal   = () => { setModalOpen(false); setTimeout(() => setActiveSurvey(null), 300); };
+  const handleDeleteSurvey = (id) => { setSurveyToDelete(id); setDeleteBannerVisible(true); };
+  const cancelDeleteSurvey = () => { setDeleteBannerVisible(false); setSurveyToDelete(null); };
 
   const confirmDeleteSurvey = async () => {
     if (!surveyToDelete) return;
     setIsDeleting(true);
     try {
-      const response = await fetch("/api/delete-survey", {
+      const res = await fetch("/api/delete-survey", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify({ surveyId: surveyToDelete }),
       });
-      if (response.ok) {
+      if (res.ok) {
         setDeleteBannerVisible(false); setSurveyToDelete(null); setIsDeleting(false);
-        navigate("/app/", { replace: true });
-      } else {
-        setIsDeleting(false);
-        alert("Failed to delete survey. Please try again.");
-      }
-    } catch (error) {
-      console.error("Error deleting survey:", error);
-      setIsDeleting(false);
-      alert("Failed to delete survey. Please try again.");
-    }
+        navigate(withLang("/app/"), { replace: true });
+      } else { setIsDeleting(false); alert("Failed to delete survey."); }
+    } catch (e) { console.error(e); setIsDeleting(false); alert("Failed to delete survey."); }
   };
 
-  const cancelDeleteSurvey = () => { setDeleteBannerVisible(false); setSurveyToDelete(null); };
-
-  const handleNewSurvey = () => {
-    if (hasReachedLimit && !activeSurvey) return;
-    setSurveyTitle(""); setActiveSurvey(null);
-    setIsFrenchVersion(!hasFrenchVersion && hasNonFrenchVersion);
-    setSelectedSurveyId(""); setValidationError(""); setShowValidationModal(false);
-    setQuestions([{ text: "", options: [{ text: "" }], isSingle: true }]);
+  const LangBadge = ({ survey }) => {
+    const lang = getLang(survey);
+    const info = LANGUAGES[lang] ?? LANGUAGES.default;
+    return <Badge tone={info.badge}>{info.flag} {info.label}</Badge>;
   };
 
-  const validateForm = () => {
-    if (!surveyTitle || surveyTitle.trim() === "") {
-      const errorMsg = "Survey title is required. Please enter a title for your survey.";
-      setValidationError(errorMsg); setShowValidationModal(true);
-      window.scrollTo({ top: 0, behavior: "smooth" }); return false;
-    }
-    if (questions.length === 0) {
-      const errorMsg = "Survey must have at least one question.";
-      setValidationError(errorMsg); setShowValidationModal(true);
-      window.scrollTo({ top: 0, behavior: "smooth" }); return false;
-    }
-    // ✅ null = unlimited, skip check
-    if (questionLimit !== null && questions.length > questionLimit) {
-      const errorMsg = `Your ${PLAN_LABELS[planName]} plan allows only ${questionLimit} question(s) per survey. Please remove ${questions.length - questionLimit} question(s) or upgrade your plan.`;
-      setValidationError(errorMsg); setShowValidationModal(true);
-      window.scrollTo({ top: 0, behavior: "smooth" }); return false;
-    }
-    for (let i = 0; i < questions.length; i++) {
-      const question = questions[i];
-      if (!question.text || question.text.trim() === "") {
-        const errorMsg = `Question ${i + 1} must have text. Please enter a question.`;
-        setValidationError(errorMsg); setShowValidationModal(true);
-        window.scrollTo({ top: 0, behavior: "smooth" }); return false;
-      }
-      if (question.isTextBox || question.isConditional) continue;
-      if (!question.options || question.options.length === 0) {
-        const errorMsg = `Question ${i + 1} must have at least one option.`;
-        setValidationError(errorMsg); setShowValidationModal(true);
-        window.scrollTo({ top: 0, behavior: "smooth" }); return false;
-      }
-      const emptyOptionIndex = question.options.findIndex(
-        (opt) => !opt.text || opt.text.trim() === ""
-      );
-      if (emptyOptionIndex !== -1) {
-        const errorMsg = `Question ${i + 1}, Option ${emptyOptionIndex + 1} must have text.`;
-        setValidationError(errorMsg); setShowValidationModal(true);
-        window.scrollTo({ top: 0, behavior: "smooth" }); return false;
-      }
-    }
-    return true;
-  };
+  const { singleCount, multiCount, condCount, textCount } = typeCounts;
+  const pct = (n) => totalQuestions > 0 ? Math.round((n / totalQuestions) * 100) : 0;
 
-  const handleFormSubmit = (e) => {
-    if (!validateForm()) { e.preventDefault(); return false; }
-    setValidationError(""); return true;
-  };
-
+  // ── Table rows ─────────────────────────────────────────────
   const surveyRows = surveys.map((survey, index) => [
-    <Box paddingBlock="200" key={`badge-${survey.id}`}>
-      <Badge tone="info" size="large">{index + 1}</Badge>
-    </Box>,
-    <BlockStack gap="200" key={`details-${survey.id}`}>
-      <Text variant="headingSm" fontWeight="bold">{survey.title}</Text>
+    <Text variant="bodyMd" fontWeight="semibold" key={`n-${survey.id}`}>{index + 1}</Text>,
+    <BlockStack gap="100" key={`d-${survey.id}`}>
+      <Text variant="bodyMd" fontWeight="bold">{survey.title}</Text>
       <InlineStack gap="200">
-        <Badge tone="success">
-          <InlineStack gap="100" blockAlign="center">
-            <Icon source={QuestionCircleIcon} />
-            <Text as="span">{survey.questions?.length || 0} Questions</Text>
-          </InlineStack>
-        </Badge>
-        {survey.isFrenchVersion
-          ? <Badge tone="magic">🇫🇷 French</Badge>
-          : <Badge tone="info">🌐 Default</Badge>
-        }
+        <Text variant="bodySm" tone="subdued">{survey.questions?.length || 0} {t("questions_label")}</Text>
+        <Text variant="bodySm" tone="subdued">·</Text>
+        <LangBadge survey={survey} />
       </InlineStack>
     </BlockStack>,
-    <InlineStack key={`actions-${survey.id}`} gap="200">
-      <Tooltip content="Preview survey">
-        <Button onClick={() => handleViewSurvey(survey)} icon={ViewIcon} size="slim" variant="tertiary" disabled={isSubmitting || isDeleting}>View</Button>
-      </Tooltip>
-      <Tooltip content="Edit survey">
-        <Button onClick={() => handleEditSurvey(survey)} icon={EditIcon} variant="primary" size="slim" disabled={isSubmitting || isDeleting}>Edit</Button>
-      </Tooltip>
-      <Tooltip content="Delete survey">
-        <Button onClick={() => handleDeleteSurvey(survey.id)} icon={DeleteIcon} size="slim" tone="critical" disabled={isSubmitting || isDeleting}>Delete</Button>
-      </Tooltip>
+    <InlineStack key={`a-${survey.id}`} gap="200">
+      <Button onClick={() => handleViewSurvey(survey)} icon={ViewIcon} size="slim" variant="tertiary">{t("view_survey")}</Button>
+      <Button onClick={() => navigate(withLang(`/app/create-survey?edit=${survey.id}`))} icon={EditIcon} size="slim">{t("edit_survey")}</Button>
+      <Button onClick={() => handleDeleteSurvey(survey.id)} icon={DeleteIcon} size="slim" tone="critical">{t("delete_survey")}</Button>
     </InlineStack>,
   ]);
 
   return (
     <Page fullWidth>
-      <style>{`
-        @keyframes slideIn {
-          from { opacity: 0; transform: translateY(-10px); }
-          to   { opacity: 1; transform: translateY(0); }
-        }
-        .animate-slide-in { animation: slideIn 0.3s ease-out; }
-      `}</style>
+      <BlockStack gap="500">
 
-      <BlockStack gap="600">
+        {/* ── Top Bar ── */}
+        <InlineStack align="space-between" blockAlign="center" wrap={false}>
+          <BlockStack gap="100">
+            <Text variant="heading2xl" as="h1">{t("dashboard_title")}</Text>
+            <Text variant="bodyMd" tone="subdued">{t("dashboard_subtitle")}</Text>
+          </BlockStack>
+          <InlineStack gap="300" blockAlign="center">
+            <div style={{ minWidth: 200 }}>
+              <Select
+                label=""
+                labelHidden
+                options={LANGUAGE_DROPDOWN_OPTIONS}
+                value={uiLanguage}
+                onChange={handleLanguageChange}
+              />
+            </div>
+            <Button
+              size="large"
+              onClick={() => navigate(withLang("/app/create-survey"))}
+              icon={PlusCircleIcon}
+              variant="primary"
+              disabled={hasReachedLimit}
+            >
+              {t("create_new_survey")}
+            </Button>
+          </InlineStack>
+        </InlineStack>
 
-        {/* ── Store + Plan Banner ── */}
-        <Banner tone="info">
+        {/* ── Plan Bar ── */}
+        <Card padding="400">
           <InlineStack align="space-between" blockAlign="center" wrap={false}>
-            <Text variant="bodyMd" fontWeight="semibold">🏪 Store: {shop}</Text>
-            <InlineStack gap="200" blockAlign="center">
+            <InlineStack gap="400" blockAlign="center">
+              <Text variant="bodyMd">🏪 {t("store_label")}: <strong>{shop}</strong></Text>
               <Badge tone={planName === "advanced" ? "success" : planName === "pro" ? "info" : "subdued"}>
-                {PLAN_LABELS[planName]} Plan
+                {PLAN_LABELS[planName]} {t("plan_label")}
               </Badge>
               <Text variant="bodySm" tone="subdued">
-                {questionLimit === null
-                  ? "Unlimited questions per survey"
-                  : `${questionLimit} question(s) per survey`
-                }
+                {questionLimit === null ? t("unlimited_questions") : `${questionLimit} ${t("questions_per_survey_label")}`}
               </Text>
-              <Button size="slim" variant="primary" onClick={() => navigate("/app/billing")}>
-                Manage Plan
-              </Button>
             </InlineStack>
+            <Button size="slim" onClick={() => navigate(withLang("/app/billing"))}>{t("manage_plan")}</Button>
           </InlineStack>
-        </Banner>
+        </Card>
 
-        {isSubmitting && (
-          <Banner tone="info">
-            <InlineStack gap="200" blockAlign="center">
-              <Spinner size="small" />
-              <Text variant="bodyMd" fontWeight="semibold">
-                {activeSurvey ? "Updating survey..." : "Creating survey..."} Please wait.
-              </Text>
-            </InlineStack>
-          </Banner>
-        )}
-
-        {actionData?.error && (
-          <Banner
-            tone={actionData.limitReached ? "warning" : "critical"}
-            action={actionData.limitReached
-              ? { content: "⬆️ Upgrade Plan", onAction: () => navigate("/app/billing") }
-              : undefined
-            }
-            onDismiss={() => {}}
-          >
-            <InlineStack gap="200" blockAlign="center">
-              <Icon source={AlertCircleIcon} />
-              <Text variant="bodyMd" fontWeight="semibold">{actionData.error}</Text>
-            </InlineStack>
-          </Banner>
-        )}
-
-        {validationError && (
-          <Banner tone="critical" onDismiss={() => { setValidationError(""); setShowValidationModal(false); }}>
-            <InlineStack gap="200" blockAlign="center">
-              <Icon source={AlertCircleIcon} />
-              <Text variant="bodyMd" fontWeight="semibold">{validationError}</Text>
-            </InlineStack>
-          </Banner>
-        )}
-
-        {hasReachedLimit && !activeSurvey && (
+        {hasReachedLimit && (
           <Banner tone="warning">
-            <InlineStack gap="200" blockAlign="center">
-              <Icon source={AlertCircleIcon} />
-              <Text variant="bodyMd" fontWeight="semibold">
-                ⚠️ Maximum survey limit reached (2/2). Delete one to create a new survey.
-              </Text>
-            </InlineStack>
+            <Text variant="bodyMd">⚠️ {t("max_survey_limit")} ({maxSurveys}/{maxSurveys}). {t("delete_to_create")}</Text>
           </Banner>
         )}
 
-        <Box paddingBlockEnd="200">
-          <InlineStack align="space-between" blockAlign="center" wrap={false}>
+        {/* ── Stats ── */}
+        <InlineGrid columns={{ xs: 1, sm: 2, md: 4 }} gap="400">
+          <Card padding="400">
             <BlockStack gap="200">
-              <Text variant="heading2xl" as="h1">Survey Management Dashboard</Text>
-              <Text variant="bodyLg" tone="subdued">
-                Create and manage your surveys —{" "}
-                {questionLimit === null
-                  ? `Unlimited questions per survey on your ${PLAN_LABELS[planName]} plan`
-                  : `Up to ${questionLimit} question(s) per survey on your ${PLAN_LABELS[planName]} plan`
-                }
-              </Text>
-            </BlockStack>
-            {(activeSurvey || surveys.length > 0) && (
-              <Button
-                size="large"
-                onClick={handleNewSurvey}
-                icon={PlusCircleIcon}
-                variant="primary"
-                disabled={hasReachedLimit || isSubmitting || isDeleting}
-              >
-                Create New Survey
-              </Button>
-            )}
-          </InlineStack>
-        </Box>
-
-        {/* ── Stats cards ── */}
-        <InlineGrid columns={{ xs: 1, sm: 3 }} gap="400">
-          <Card>
-            <BlockStack gap="300">
-              <InlineStack align="space-between" blockAlign="start">
-                <Text variant="headingSm" tone="subdued">Total Surveys</Text>
-                <Icon source={CheckCircleIcon} tone="success" />
-              </InlineStack>
+              <Text variant="bodySm" tone="subdued">{t("total_surveys")}</Text>
               <InlineStack gap="200" blockAlign="baseline">
                 <Text variant="heading2xl" fontWeight="bold">{surveys.length}</Text>
-                <Text variant="bodyMd" tone="subdued">/ 2</Text>
+                <Text variant="bodySm" tone="subdued">/ {maxSurveys}</Text>
               </InlineStack>
-              {hasReachedLimit && <Badge tone="warning">Limit Reached</Badge>}
+              <div style={{ height: 6, borderRadius: 3, background: "#e4e5e7", overflow: "hidden" }}>
+                <div style={{ height: "100%", borderRadius: 3, width: `${(surveys.length / maxSurveys) * 100}%`, background: surveys.length >= maxSurveys ? "#d82c0d" : "#2c6ecb", transition: "width 0.4s ease" }} />
+              </div>
             </BlockStack>
           </Card>
 
-          <Card>
-            <BlockStack gap="300">
-              <InlineStack align="space-between" blockAlign="start">
-                <Text variant="headingSm" tone="subdued">Total Questions</Text>
-                <Icon source={QuestionCircleIcon} tone="info" />
-              </InlineStack>
+          <Card padding="400">
+            <BlockStack gap="200">
+              <Text variant="bodySm" tone="subdued">{t("total_questions")}</Text>
               <Text variant="heading2xl" fontWeight="bold">{totalQuestions}</Text>
+              <Text variant="bodySm" tone="subdued">
+                {surveys.length > 0 ? `≈ ${Math.round(totalQuestions / surveys.length)} / ${t("questions_per_survey").toLowerCase()}` : "—"}
+              </Text>
             </BlockStack>
           </Card>
 
-          <Card>
-            <BlockStack gap="300">
-              <InlineStack align="space-between" blockAlign="start">
-                <Text variant="headingSm" tone="subdued">Questions / Survey</Text>
-                <Badge tone={planName === "advanced" ? "success" : planName === "pro" ? "info" : "subdued"}>
-                  {PLAN_LABELS[planName]}
-                </Badge>
-              </InlineStack>
+          <Card padding="400">
+            <BlockStack gap="200">
+              <Text variant="bodySm" tone="subdued">{t("questions_per_survey")}</Text>
               <Text variant="heading2xl" fontWeight="bold">{limitLabel}</Text>
-              <Button
-                size="slim"
-                variant={planName === "advanced" ? "tertiary" : "primary"}
-                tone={planName === "advanced" ? undefined : "success"}
-                onClick={() => navigate("/app/billing")}
-              >
-                {planName === "advanced" ? "✓ Max Plan" : "⬆️ Upgrade for more"}
+              <Button size="slim" fullWidth variant={planName === "advanced" ? "tertiary" : "primary"} onClick={() => navigate(withLang("/app/billing"))}>
+                {planName === "advanced" ? t("max_plan") : t("upgrade_for_more")}
               </Button>
             </BlockStack>
           </Card>
-        </InlineGrid>
 
-        {/* ── Delete modal ── */}
-        {isDeleteBannerVisible && (
-          <Modal
-            open={true}
-            onClose={isDeleting ? undefined : cancelDeleteSurvey}
-            title="Confirm Deletion"
-            primaryAction={{ content: isDeleting ? "Deleting..." : "Delete Permanently", onAction: confirmDeleteSurvey, destructive: true, loading: isDeleting, disabled: isDeleting }}
-            secondaryActions={[{ content: "Cancel", onAction: cancelDeleteSurvey, disabled: isDeleting }]}
-          >
-            <Modal.Section>
-              <BlockStack gap="400">
-                {isDeleting && (
-                  <Banner tone="info">
-                    <InlineStack gap="200" blockAlign="center">
-                      <Spinner size="small" />
-                      <Text variant="bodyMd" fontWeight="semibold">Deleting survey, please wait...</Text>
+          <Card padding="400">
+            <BlockStack gap="200">
+              <Text variant="bodySm" tone="subdued">{t("language_versions")}</Text>
+              <BlockStack gap="100">
+                {Object.entries(LANGUAGES).map(([key, { flag, label }]) => {
+                  const active = usedLanguages.includes(key);
+                  return (
+                    <InlineStack key={key} gap="200" blockAlign="center">
+                      <Text variant="bodySm">{flag}</Text>
+                      <Text variant="bodySm" tone={active ? undefined : "subdued"}>{label}</Text>
+                      <div style={{ marginLeft: "auto" }}>
+                        {active
+                          ? <span style={{ color: "#008060", fontSize: 12, fontWeight: 600 }}>✓</span>
+                          : <span style={{ color: "#b5b5b5", fontSize: 12 }}>–</span>}
+                      </div>
                     </InlineStack>
-                  </Banner>
-                )}
-                <Banner tone="critical">
-                  <BlockStack gap="300">
-                    <Text variant="headingSm" fontWeight="bold">⚠️ This action cannot be undone!</Text>
-                    <Text variant="bodyMd">Deleting this survey will permanently remove:</Text>
-                    <List type="bullet">
-                      <List.Item>The survey and all its questions</List.Item>
-                      <List.Item>All user responses and data</List.Item>
-                      <List.Item>Any associated analytics</List.Item>
-                    </List>
-                  </BlockStack>
-                </Banner>
+                  );
+                })}
               </BlockStack>
-            </Modal.Section>
-          </Modal>
-        )}
-
-        <InlineGrid gap="500" columns={{ xs: 1, lg: 2 }}>
-
-          {/* ── Survey Form ── */}
-          {(activeSurvey || !hasReachedLimit) && (
-            <Form method="post" onSubmit={handleFormSubmit}>
-              <Card>
-                <BlockStack gap="600">
-                  <BlockStack gap="400">
-                    <InlineStack align="space-between" blockAlign="center">
-                      <BlockStack gap="200">
-                        <Text variant="headingXl" as="h2">
-                          {activeSurvey ? "✏️ Edit Survey" : "✨ Create New Survey"}
-                        </Text>
-                        <Text variant="bodySm" tone="subdued">
-                          {activeSurvey ? "Update your survey details below" : "Build your survey step by step"}
-                        </Text>
-                      </BlockStack>
-                    </InlineStack>
-                    <Divider />
-                  </BlockStack>
-
-                  <FormLayout>
-                    <Card background="bg-surface-secondary">
-                      <BlockStack gap="400">
-                        <InlineStack gap="200" blockAlign="center">
-                          <Icon source={EditIcon} />
-                          <Text variant="headingMd" fontWeight="bold">Survey Details</Text>
-                        </InlineStack>
-                        <TextField
-                          label="Survey Title"
-                          value={surveyTitle}
-                          onChange={(value) => { setSurveyTitle(value); if (validationError) { setValidationError(""); setShowValidationModal(false); } }}
-                          name="quizTitle"
-                          id="quizTitle"
-                          placeholder="e.g., Customer Satisfaction Survey"
-                          requiredIndicator
-                          autoComplete="off"
-                          helpText="Choose a clear, descriptive title for your survey"
-                          disabled={isSubmitting}
-                        />
-                        <Card background="bg-surface">
-                          <BlockStack gap="300">
-                            <Checkbox
-                              label={<InlineStack gap="200" blockAlign="center"><Text as="span">🇫🇷 French Version Survey</Text></InlineStack>}
-                              checked={isFrenchVersion}
-                              onChange={(value) => setIsFrenchVersion(value)}
-                              helpText={isFrenchVersion ? "This is a French language survey" : "This is a default (non-French) survey"}
-                              disabled={
-                                isSubmitting ||
-                                (isFrenchVersion && hasFrenchVersion && !activeSurvey?.isFrenchVersion) ||
-                                (!isFrenchVersion && hasNonFrenchVersion && activeSurvey?.isFrenchVersion)
-                              }
-                            />
-                            {!activeSurvey && (
-                              <Text variant="bodySm" tone="subdued">
-                                {hasFrenchVersion && !hasNonFrenchVersion && "⚠️ You need to create a non-French (default) survey"}
-                                {!hasFrenchVersion && hasNonFrenchVersion && "⚠️ You need to create a French survey"}
-                                {!hasFrenchVersion && !hasNonFrenchVersion && "ℹ️ Choose survey language (one of each type allowed)"}
-                                {hasFrenchVersion && hasNonFrenchVersion && "✅ You have both survey types"}
-                              </Text>
-                            )}
-                          </BlockStack>
-                        </Card>
-                      </BlockStack>
-                    </Card>
-
-                    <BlockStack gap="400">
-                      <InlineStack align="space-between" blockAlign="center">
-                        <BlockStack gap="100">
-                          <InlineStack gap="200" blockAlign="center">
-                            <Icon source={QuestionCircleIcon} />
-                            <Text variant="headingMd" fontWeight="bold">Questions</Text>
-                            {/* ✅ Shows x / ∞ or x / 5 etc */}
-                            <Badge tone={hasReachedQLimit ? "critical" : "info"}>
-                              {questions.length} / {limitLabel}
-                            </Badge>
-                          </InlineStack>
-                          <Text variant="bodySm" tone="subdued">
-                            {questionLimit === null
-                              ? "Unlimited questions on your Advanced plan"
-                              : `Your ${PLAN_LABELS[planName]} plan allows up to ${questionLimit} question(s)`
-                            }
-                          </Text>
-                        </BlockStack>
-
-                        {/* ✅ Only disable when there's an actual limit AND it's reached */}
-                        <Tooltip content={
-                          hasReachedQLimit
-                            ? `Upgrade to add more than ${questionLimit} question(s)`
-                            : "Add a new question"
-                        }>
-                          <Button
-                            onClick={handleAddQuestion}
-                            icon={PlusCircleIcon}
-                            variant="primary"
-                            disabled={isSubmitting || hasReachedQLimit}
-                          >
-                            Add Question
-                          </Button>
-                        </Tooltip>
-                      </InlineStack>
-
-                      {/* ✅ Only show upgrade banner when there's a real limit reached */}
-                      {hasReachedQLimit && questionLimit !== null && (
-                        <Banner
-                          tone="warning"
-                          action={{ content: "⬆️ Upgrade Plan", onAction: () => navigate("/app/billing") }}
-                        >
-                          <Text variant="bodyMd">
-                            You've reached the <strong>{questionLimit} question</strong> limit on your{" "}
-                            <strong>{PLAN_LABELS[planName]}</strong> plan.
-                            Upgrade to {planName === "free" ? "Pro (5 questions)" : "Advanced (unlimited)"}.
-                          </Text>
-                        </Banner>
-                      )}
-
-                      <Divider />
-                    </BlockStack>
-
-                    <BlockStack gap="400">
-                      {questions.map((question, index) => (
-                        <div key={index} className="animate-slide-in">
-                          <Card background="bg-surface-brand">
-                            <BlockStack gap="500">
-                              <InlineStack align="space-between" blockAlign="start">
-                                <InlineStack gap="300" blockAlign="center">
-                                  <Badge tone="success" size="large">Q{index + 1}</Badge>
-                                  <Text variant="headingSm" fontWeight="semibold">Question {index + 1}</Text>
-                                  {question.isSingle && <Badge tone="attention">Single Choice</Badge>}
-                                </InlineStack>
-                                <Tooltip content="Remove this question">
-                                  <Button onClick={() => handleRemoveQuestion(index)} icon={DeleteIcon} variant="plain" tone="critical" disabled={isSubmitting} />
-                                </Tooltip>
-                              </InlineStack>
-
-                              <Card background="bg-surface-secondary">
-                                <BlockStack gap="300">
-                                  <Text variant="headingXs" fontWeight="medium">Question Type</Text>
-                                  <InlineGrid columns={3} gap="300">
-                                    <Tooltip content="Yes/No question with conditional logic">
-                                      <Checkbox label="🔀 Conditional" checked={question.isConditional || false} disabled={question.isMultiChoice || question.isTextBox || isSubmitting} onChange={(v) => handleInputChange(index, "isConditional", v)} />
-                                    </Tooltip>
-                                    <Tooltip content="Open-ended text response">
-                                      <Checkbox label="📝 Text Box" checked={question.isTextBox || false} disabled={question.isMultiChoice || question.isConditional || isSubmitting} onChange={(v) => handleInputChange(index, "isTextBox", v)} />
-                                    </Tooltip>
-                                    <Tooltip content="Allow multiple answer selections">
-                                      <Checkbox label="☑️ Multi-Choice" checked={question.isMultiChoice || false} disabled={question.isConditional || question.isTextBox || isSubmitting} onChange={(v) => handleInputChange(index, "isMultiChoice", v)} />
-                                    </Tooltip>
-                                  </InlineGrid>
-                                  {question.isSingle && (
-                                    <Text variant="bodySm" tone="subdued">
-                                      ℹ️ No type selected — defaulting to <strong>Single Choice</strong>
-                                    </Text>
-                                  )}
-                                </BlockStack>
-                              </Card>
-
-                              <TextField
-                                label="Question Text"
-                                placeholder="Enter your question here..."
-                                value={question.text}
-                                onChange={(value) => { handleInputChange(index, "text", value); if (validationError) { setValidationError(""); setShowValidationModal(false); } }}
-                                autoComplete="off"
-                                multiline={2}
-                                requiredIndicator
-                                disabled={isSubmitting}
-                              />
-
-                              {!question.isTextBox && (
-                                <Card background="bg-surface">
-                                  <BlockStack gap="400">
-                                    <InlineStack align="space-between" blockAlign="center">
-                                      <Text variant="headingSm" fontWeight="medium">Answer Options</Text>
-                                      {!question.isConditional && (
-                                        <Button onClick={() => handleAddOption(index)} icon={PlusCircleIcon} variant="primary" tone="success" size="slim" disabled={isSubmitting}>Add Option</Button>
-                                      )}
-                                    </InlineStack>
-                                    <BlockStack gap="300">
-                                      {question.isConditional ? (
-                                        <>
-                                          <Card background="bg-surface-secondary" padding="300">
-                                            <InlineStack gap="200" blockAlign="center">
-                                              <Badge tone="success">✓</Badge>
-                                              <TextField disabled value="Yes" />
-                                            </InlineStack>
-                                          </Card>
-                                          <Card background="bg-surface-secondary" padding="300">
-                                            <InlineStack gap="200" blockAlign="center">
-                                              <Badge tone="critical">✗</Badge>
-                                              <TextField disabled value="No" />
-                                            </InlineStack>
-                                          </Card>
-                                        </>
-                                      ) : (
-                                        question.options.map((option, optIndex) => (
-                                          <Card key={optIndex} background="bg-surface-secondary" padding="300">
-                                            <InlineStack gap="200" blockAlign="center">
-                                              <Badge>{optIndex + 1}</Badge>
-                                              <Box width="100%">
-                                                <TextField
-                                                  placeholder={`Option ${optIndex + 1}`}
-                                                  value={option.text}
-                                                  onChange={(value) => {
-                                                    const updatedQuestions = [...questions];
-                                                    updatedQuestions[index].options[optIndex].text = value;
-                                                    setQuestions(updatedQuestions);
-                                                    if (validationError) { setValidationError(""); setShowValidationModal(false); }
-                                                  }}
-                                                  autoComplete="off"
-                                                  requiredIndicator
-                                                  disabled={isSubmitting}
-                                                />
-                                              </Box>
-                                              <div style={{ display: "none" }}>
-                                                {!question.isConditional && !question.isTextBox && (
-                                                  <Tooltip content={option.haveTextBox ? "Text field enabled" : "Add text field"}>
-                                                    <Button
-                                                      onClick={() => {
-                                                        const updatedQuestions = [...questions];
-                                                        updatedQuestions[index].options[optIndex].haveTextBox = !updatedQuestions[index].options[optIndex].haveTextBox;
-                                                        setQuestions(updatedQuestions);
-                                                      }}
-                                                      icon={questions[index].options[optIndex].haveTextBox ? ToggleOnIcon : ToggleOffIcon}
-                                                      variant={questions[index].options[optIndex].haveTextBox ? "primary" : "secondary"}
-                                                      size="slim"
-                                                      disabled={isSubmitting}
-                                                    />
-                                                  </Tooltip>
-                                                )}
-                                              </div>
-                                              <Tooltip content="Remove this option">
-                                                <Button onClick={() => handleRemoveOption(index, optIndex)} icon={DeleteIcon} tone="critical" size="slim" disabled={isSubmitting} />
-                                              </Tooltip>
-                                            </InlineStack>
-                                          </Card>
-                                        ))
-                                      )}
-                                    </BlockStack>
-                                  </BlockStack>
-                                </Card>
-                              )}
-                            </BlockStack>
-                          </Card>
-                        </div>
-                      ))}
-                    </BlockStack>
-
-                    <input type="hidden" name="questions" value={JSON.stringify(questions)} />
-                    <input type="hidden" name="surveyId" value={activeSurvey ? activeSurvey.id : ""} />
-                    <input type="hidden" name="isFrenchVersion" value={isFrenchVersion} />
-                    <input type="hidden" name="frenchSurveyId" value={selectedSurveyId || ""} />
-
-                    <Box paddingBlockStart="400">
-                      <Button submit icon={SaveIcon} variant="primary" size="large" fullWidth tone="success" loading={isSubmitting} disabled={isSubmitting}>
-                        {activeSurvey ? "💾 Update Survey" : "✨ Save Survey"}
-                      </Button>
-                    </Box>
-                  </FormLayout>
-                </BlockStack>
-              </Card>
-            </Form>
-          )}
-
-          {/* ── Survey list ── */}
-          <Card>
-            <BlockStack gap="500">
-              <BlockStack gap="300">
-                <BlockStack gap="200">
-                  <Text variant="headingXl" as="h2">Your Surveys</Text>
-                  <Text variant="bodySm" tone="subdued">
-                    Manage your surveys (Max: 1 French + 1 Non-French) —{" "}
-                    {PLAN_LABELS[planName]}: {limitLabel} questions/survey
-                  </Text>
-                </BlockStack>
-                <Divider />
-              </BlockStack>
-              {surveys.length > 0 ? (
-                <DataTable
-                  columnContentTypes={["text", "text", "text"]}
-                  headings={[
-                    <Text variant="headingXs" fontWeight="semibold" key="h1">#</Text>,
-                    <Text variant="headingXs" fontWeight="semibold" key="h2">Survey Details</Text>,
-                    <Text variant="headingXs" fontWeight="semibold" key="h3">Actions</Text>,
-                  ]}
-                  rows={surveyRows}
-                  hoverable
-                />
-              ) : (
-                <Box padding="1600">
-                  <EmptyState heading="No surveys yet" image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png">
-                    <p>Create your first survey to get started (Maximum: 1 French + 1 Non-French)</p>
-                  </EmptyState>
-                </Box>
-              )}
             </BlockStack>
           </Card>
         </InlineGrid>
+
+        {/* ── Question Types ── */}
+        {totalQuestions > 0 && (
+          <Card padding="400">
+            <BlockStack gap="400">
+              <Text variant="headingMd" fontWeight="bold">{t("question_types_breakdown")}</Text>
+              <Divider />
+              <InlineGrid columns={{ xs: 2, md: 4 }} gap="400">
+                {[
+                  { label: t("single_choice"), count: singleCount, emoji: "🔘", color: "#ffc453" },
+                  { label: t("multi_choice"),  count: multiCount,  emoji: "☑️",  color: "#36a569" },
+                  { label: t("conditional"),   count: condCount,   emoji: "🔀", color: "#e8a735" },
+                  { label: t("text_box"),      count: textCount,   emoji: "📝", color: "#5baaec" },
+                ].map(({ label, count, emoji, color }) => (
+                  <div key={label} style={{ border: "1px solid #e1e3e5", borderRadius: 8, padding: 16, background: "#fafbfb" }}>
+                    <BlockStack gap="200">
+                      <InlineStack gap="200" blockAlign="center">
+                        <span style={{ fontSize: 18 }}>{emoji}</span>
+                        <Text variant="bodySm" fontWeight="semibold">{label}</Text>
+                      </InlineStack>
+                      <InlineStack gap="200" blockAlign="baseline">
+                        <Text variant="headingXl" fontWeight="bold">{count}</Text>
+                        <Text variant="bodySm" tone="subdued">{pct(count)}%</Text>
+                      </InlineStack>
+                      <div style={{ height: 4, borderRadius: 2, background: "#e4e5e7", overflow: "hidden" }}>
+                        <div style={{ height: "100%", borderRadius: 2, width: `${pct(count)}%`, background: color, transition: "width 0.4s ease" }} />
+                      </div>
+                    </BlockStack>
+                  </div>
+                ))}
+              </InlineGrid>
+            </BlockStack>
+          </Card>
+        )}
+
+        {/* ── Language Distribution ── */}
+        {surveys.length > 0 && (
+          <Card padding="400">
+            <BlockStack gap="400">
+              <Text variant="headingMd" fontWeight="bold">{t("survey_distribution")}</Text>
+              <Divider />
+              <InlineGrid columns={{ xs: 2, sm: 3, md: 5 }} gap="300">
+                {Object.entries(LANGUAGES).map(([key, { flag, label }]) => {
+                  const survey = surveys.find((s) => getLang(s) === key);
+                  return (
+                    <div key={key} style={{ border: `1px solid ${survey ? "#bfe3d0" : "#e1e3e5"}`, borderRadius: 8, padding: "14px 12px", textAlign: "center", background: survey ? "#f0fdf4" : "#fafbfb" }}>
+                      <BlockStack gap="200" inlineAlign="center">
+                        <Text variant="headingLg">{flag}</Text>
+                        <Text variant="bodySm" fontWeight="semibold">{label}</Text>
+                        {survey ? (
+                          <>
+                            <Text variant="bodySm" fontWeight="medium" tone="success">{survey.title}</Text>
+                            <Text variant="bodySm" tone="subdued">{survey.questions?.length || 0} {t("questions_label")}</Text>
+                          </>
+                        ) : (
+                          <Text variant="bodySm" tone="subdued">—</Text>
+                        )}
+                      </BlockStack>
+                    </div>
+                  );
+                })}
+              </InlineGrid>
+            </BlockStack>
+          </Card>
+        )}
+
+        {/* ── Survey List ── */}
+        <Card padding="400">
+          <BlockStack gap="400">
+            <InlineStack align="space-between" blockAlign="center">
+              <BlockStack gap="100">
+                <Text variant="headingLg" fontWeight="bold">{t("your_surveys")}</Text>
+                <Text variant="bodySm" tone="subdued">
+                  {t("one_survey_per_lang")} · {PLAN_LABELS[planName]}: {limitLabel} {t("questions_per_survey_label")}
+                </Text>
+              </BlockStack>
+              <Button onClick={() => navigate(withLang("/app/create-survey"))} icon={PlusCircleIcon} disabled={hasReachedLimit}>
+                {t("create_new_survey")}
+              </Button>
+            </InlineStack>
+            <Divider />
+            {surveys.length > 0 ? (
+              <DataTable
+                columnContentTypes={["numeric", "text", "text"]}
+                headings={[
+                  <Text variant="bodySm" fontWeight="semibold" key="h1">#</Text>,
+                  <Text variant="bodySm" fontWeight="semibold" key="h2">{t("survey_details")}</Text>,
+                  <Text variant="bodySm" fontWeight="semibold" key="h3">{t("actions_label")}</Text>,
+                ]}
+                rows={surveyRows}
+                hoverable
+              />
+            ) : (
+              <Box padding="1200">
+                <EmptyState
+                  heading={t("no_surveys_yet")}
+                  image="https://cdn.shopify.com/s/files/1/0262/4071/2726/files/emptystate-files.png"
+                  action={{ content: t("create_new_survey"), onAction: () => navigate(withLang("/app/create-survey")) }}
+                >
+                  <p>{t("no_surveys_desc")}</p>
+                </EmptyState>
+              </Box>
+            )}
+          </BlockStack>
+        </Card>
       </BlockStack>
 
-      {/* ── View Survey Modal ── */}
+      {/* ── Delete Modal ── */}
+      {isDeleteBannerVisible && (
+        <Modal
+          open={true}
+          onClose={isDeleting ? undefined : cancelDeleteSurvey}
+          title={t("confirm_deletion")}
+          primaryAction={{ content: isDeleting ? t("deleting") : t("delete_permanently"), onAction: confirmDeleteSurvey, destructive: true, loading: isDeleting, disabled: isDeleting }}
+          secondaryActions={[{ content: t("cancel"), onAction: cancelDeleteSurvey, disabled: isDeleting }]}
+        >
+          <Modal.Section>
+            <BlockStack gap="400">
+              {isDeleting && (
+                <Banner tone="info">
+                  <InlineStack gap="200" blockAlign="center">
+                    <Spinner size="small" />
+                    <Text variant="bodyMd" fontWeight="semibold">{t("deleting")}</Text>
+                  </InlineStack>
+                </Banner>
+              )}
+              <Banner tone="critical">
+                <BlockStack gap="300">
+                  <Text variant="bodyMd" fontWeight="bold">{t("cannot_undo")}</Text>
+                  <Text variant="bodyMd">{t("delete_warning")}</Text>
+                  <List type="bullet">
+                    <List.Item>{t("delete_item_survey")}</List.Item>
+                    <List.Item>{t("delete_item_responses")}</List.Item>
+                    <List.Item>{t("delete_item_analytics")}</List.Item>
+                  </List>
+                </BlockStack>
+              </Banner>
+            </BlockStack>
+          </Modal.Section>
+        </Modal>
+      )}
+
+      {/* ── View Modal ── */}
       {activeSurvey && (
-        <Modal open={modalOpen} onClose={handleCloseModal} title={<BlockStack gap="200"><Text variant="headingLg" fontWeight="bold">{activeSurvey.title}</Text></BlockStack>} large>
+        <Modal open={modalOpen} onClose={handleCloseModal} title={activeSurvey.title} large>
           <Modal.Section>
             <BlockStack gap="500">
-              <Card background="bg-surface-secondary">
-                <InlineStack gap="300" wrap>
-                  <Badge tone="success" size="large">
-                    <InlineStack gap="100" blockAlign="center">
-                      <Icon source={QuestionCircleIcon} />
-                      <Text as="span">{activeSurvey.questions?.length || 0} Questions</Text>
-                    </InlineStack>
-                  </Badge>
-                  {activeSurvey.isFrenchVersion
-                    ? <Badge tone="magic" size="large">🇫🇷 French Version</Badge>
-                    : <Badge tone="info" size="large">🌐 Default Version</Badge>
-                  }
-                </InlineStack>
-              </Card>
+              <InlineStack gap="300" wrap>
+                <Badge tone="success">{activeSurvey.questions?.length || 0} {t("questions_label")}</Badge>
+                <LangBadge survey={activeSurvey} />
+              </InlineStack>
               <Divider />
               <InlineGrid columns={{ xs: 1, md: 2 }} gap="400">
-                {activeSurvey.questions.map((question, questionIndex) => (
-                  <Card key={question.id} background="bg-surface-brand">
-                    <BlockStack gap="400">
-                      <InlineStack gap="200" blockAlign="start">
-                        <Badge tone="info" size="large">Q{questionIndex + 1}</Badge>
+                {activeSurvey.questions.map((question, qIdx) => (
+                  <Card key={question.id} padding="400">
+                    <BlockStack gap="300">
+                      <InlineStack gap="200" blockAlign="center">
+                        <Text variant="bodySm" fontWeight="bold" tone="subdued">Q{qIdx + 1}</Text>
+                        <Text variant="bodyMd" fontWeight="bold">{question.text}</Text>
                       </InlineStack>
-                      <Text variant="headingMd" fontWeight="bold">{question.text}</Text>
                       <InlineStack gap="200" wrap>
-                        {question.isConditional && <Badge tone="attention">🔀 Conditional</Badge>}
-                        {question.isMultiChoice && <Badge tone="success">☑️ Multi-Choice</Badge>}
-                        {question.isTextBox && <Badge tone="info">📝 Text Box</Badge>}
-                        {!question.isConditional && !question.isMultiChoice && !question.isTextBox && <Badge tone="warning">🔘 Single Choice</Badge>}
+                        {question.isConditional  && <Badge tone="warning">🔀 {t("conditional")}</Badge>}
+                        {question.isMultiChoice  && <Badge tone="success">☑️ {t("multi_choice")}</Badge>}
+                        {question.isTextBox      && <Badge tone="info">📝 {t("text_box")}</Badge>}
+                        {!question.isConditional && !question.isMultiChoice && !question.isTextBox && (
+                          <Badge tone="attention">🔘 {t("single_choice")}</Badge>
+                        )}
                       </InlineStack>
                       {!question.isTextBox && (
-                        <Card background="bg-surface">
-                          <BlockStack gap="300">
-                            <Text variant="headingXs" fontWeight="medium" tone="subdued">Answer Options:</Text>
-                            <List type="bullet">
-                              {question.answers.map((answer) => (
-                                <List.Item key={answer.id}>
-                                  <InlineStack gap="200" blockAlign="center">
-                                    <Text variant="bodyMd">{answer.text}</Text>
-                                    {answer.haveTextBox && <Tooltip content="Includes additional text field"><Badge tone="attention" size="small">+ Text</Badge></Tooltip>}
-                                  </InlineStack>
-                                </List.Item>
-                              ))}
-                            </List>
-                          </BlockStack>
-                        </Card>
+                        <BlockStack gap="100">
+                          {question.answers.map((a) => (
+                            <InlineStack key={a.id} gap="200" blockAlign="center">
+                              <span style={{ color: "#8c9196" }}>•</span>
+                              <Text variant="bodyMd">{a.text}</Text>
+                            </InlineStack>
+                          ))}
+                        </BlockStack>
                       )}
                     </BlockStack>
                   </Card>
@@ -970,21 +486,6 @@ export default function Index() {
           </Modal.Section>
         </Modal>
       )}
-
-      {/* ── Validation Modal ── */}
-      <Modal open={showValidationModal} onClose={() => setShowValidationModal(false)} title="⚠️ Validation Error" primaryAction={{ content: "Got it", onAction: () => setShowValidationModal(false) }}>
-        <Modal.Section>
-          <BlockStack gap="400">
-            <Banner tone="critical">
-              <BlockStack gap="300">
-                <Text variant="headingMd" fontWeight="bold">Please fix the following error:</Text>
-                <Text variant="bodyLg">{validationError}</Text>
-              </BlockStack>
-            </Banner>
-            <Text variant="bodyMd" tone="subdued">Please correct the error and try submitting again.</Text>
-          </BlockStack>
-        </Modal.Section>
-      </Modal>
     </Page>
   );
 }
