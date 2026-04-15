@@ -14,9 +14,10 @@ import {
     Badge,
     Divider,
     Banner,
+    Select,
 } from '@shopify/polaris';
 import SurveyChart from './component/SurveyBarChart';
-import { json, useLoaderData } from '@remix-run/react';
+import { json, useLoaderData, useSearchParams, useNavigate } from '@remix-run/react';
 import { PrismaClient } from '@prisma/client';
 import SurveyLineChart from './component/SurveyLineChart';
 import SurveyBarChart from './component/SurveyBarChart';
@@ -30,19 +31,44 @@ import {
     FilterIcon,
 } from '@shopify/polaris-icons';
 import { authenticate } from '../shopify.server';
+import { getT, LANG_KEY_TO_ISO } from '../utils/translations';
 
 const prisma = new PrismaClient();
+
+const LANGUAGES_DROPDOWN = [
+    { label: "🌐  Default (English)", value: "default" },
+    { label: "🇫🇷  French",           value: "french" },
+    { label: "🇪🇸  Spanish",          value: "spanish" },
+    { label: "🇮🇹  Italian",          value: "italian" },
+    { label: "🇩🇪  German",           value: "german" },
+];
+
+// Map UI language key to the short code used for chart data filtering
+const LANG_KEY_TO_SHORT = {
+    default: "en",
+    french: "fr",
+    spanish: "es",
+    italian: "it",
+    german: "de",
+};
+
+// Map short code to survey language field value
+const SHORT_TO_SURVEY_LANG = {
+    en: "default",
+    fr: "french",
+    it: "italian",
+    es: "spanish",
+    de: "german",
+};
 
 /**
  * Loader function with multi-tenancy support
  */
 export const loader = async ({ request }) => {
     try {
-        // Get shop from session for multi-tenancy
         const { session, admin } = await authenticate.admin(request);
         const shop = session.shop;
 
-        // Fetch shop domain from GraphQL
         const response = await admin.graphql(
             `#graphql
             query {
@@ -61,31 +87,22 @@ export const loader = async ({ request }) => {
         const url = data.data.shop.url;
         const shopDomain = url.replace("https://", "");
 
-        // Fetch feedbacks filtered by shop (multi-tenancy)
         const feedbacks = await prisma.apiProxyData.findMany({
-            where: {
-                shop: shop, // Filter by shop for multi-tenancy
-            },
-            orderBy: {
-                createdAt: 'desc',
-            },
+            where: { shop },
+            orderBy: { createdAt: 'desc' },
         });
 
-        // Fetch survey data filtered by shop (multi-tenancy)
         const surveyData = await prisma.survey.findMany({
-            where: {
-                shop: shop, // Filter by shop for multi-tenancy
-            },
-            include: {
-                questions: true,
-            },
+            where: { shop },
+            include: { questions: true },
         });
-
+       console.log("Fetched feedbacks:", feedbacks);
+       console.log("Fetched survey data:", surveyData);
         return json({
             feedbacks,
             surveyData,
-            shop, // Pass shop to frontend
-            shopDomain, // Pass shop domain for display
+            shop,
+            shopDomain,
             success: true
         });
     } catch (error) {
@@ -103,10 +120,38 @@ export const loader = async ({ request }) => {
 
 const TestCharts = () => {
     const { feedbacks, surveyData, shop, shopDomain, error } = useLoaderData();
+    const [searchParams, setSearchParams] = useSearchParams();
+    const navigate = useNavigate();
+
+    // ── Language from URL ──────────────────────────────────────
+    const uiLanguage = searchParams.get("lang") || "default";
+    const uiLangIso  = LANG_KEY_TO_ISO[uiLanguage] ?? "en";
+    const t          = getT(uiLangIso);
+
+    // Short language code for chart data filtering (en, fr, it, es, de)
+    const language = LANG_KEY_TO_SHORT[uiLanguage] || "en";
+
+    const withLang = useCallback(
+        (path) => {
+            const sep = path.includes("?") ? "&" : "?";
+            return uiLanguage === "default" ? path : `${path}${sep}lang=${uiLanguage}`;
+        },
+        [uiLanguage],
+    );
+
+    const handleLanguageChange = useCallback(
+        (value) => {
+            setSearchParams((prev) => {
+                if (value === "default") prev.delete("lang");
+                else prev.set("lang", value);
+                return prev;
+            });
+        },
+        [setSearchParams],
+    );
 
     const [isModalOpen, setIsModalOpen] = useState(false);
     const [activeButtonIndex, setActiveButtonIndex] = useState('bar');
-    const [language, setLanguage] = useState('en');
 
     const [{ month, year }, setDate] = useState({ month: 1, year: 2025 });
     const [selectedDates, setSelectedDates] = useState({
@@ -133,20 +178,6 @@ const TestCharts = () => {
         },
         [activeButtonIndex]
     );
-
-    const toggleLanguage = () => {
-        setLanguage((prevLanguage) =>
-            prevLanguage === 'en'
-                ? 'fr'
-                : prevLanguage === 'fr'
-                    ? 'it'
-                    : prevLanguage === 'it'
-                        ? 'es'
-                        : prevLanguage === 'es'
-                            ? 'de'
-                            : 'en'
-        );
-    };
 
     const handleMonthChange = useCallback((month, year) => setDate({ month, year }), []);
 
@@ -193,71 +224,23 @@ const TestCharts = () => {
     };
 
     const chartConfig = {
-        bar: {
-            icon: ChartVerticalIcon,
-            label: {
-                en: 'Bar Chart',
-                fr: 'Graphique à barres',
-                it: 'Grafico a barre',
-                es: 'Gráfico de barras',
-                de: 'Balkendiagramm'
-            },
-            component: SurveyBarChart
-        },
-        line: {
-            icon: ChartLineIcon,
-            label: {
-                en: 'Line Chart',
-                fr: 'Graphique linéaire',
-                it: 'Grafico a linee',
-                es: 'Gráfico de líneas',
-                de: 'Liniendiagramm'
-            },
-            component: SurveyLineChart
-        },
-        pai: {
-            icon: ChartDonutIcon,
-            label: {
-                en: 'Pie Chart',
-                fr: 'Graphique circulaire',
-                it: 'Grafico a torta',
-                es: 'Gráfico circular',
-                de: 'Kreisdiagramm'
-            },
-            component: SurveyPaiChart
-        }
+        bar:  { icon: ChartVerticalIcon, labelKey: "chart_bar",  component: SurveyBarChart },
+        line: { icon: ChartLineIcon,     labelKey: "chart_line", component: SurveyLineChart },
+        pai:  { icon: ChartDonutIcon,    labelKey: "chart_pie",  component: SurveyPaiChart },
     };
 
     const ActiveChart = chartConfig[activeButtonIndex].component;
     const totalResponses = filteredData[0]?.totalUsers || 0;
+
     const languageFilteredData = filteredData.filter((survey) => {
-        if (language === "en") {
-            return survey.language === "default";
-        }
-
-        if (language === "fr") {
-            return survey.language === "french";
-        }
-
-        if (language === "it") {
-            return survey.language === "italian";
-        }
-
-        if (language === "es") {
-            return survey.language === "spanish";
-        }
-
-        if (language === "de") {
-            return survey.language === "german";
-        }
-
-        return false;
+        const surveyLangKey = SHORT_TO_SURVEY_LANG[language];
+        return survey.language === surveyLangKey;
     });
 
     // Show error state
     if (error) {
         return (
-            <Page title="Survey Data Visualization">
+            <Page title={t("chart_title")}>
                 <Banner tone="critical">
                     <p>Failed to load analytics data: {error}</p>
                 </Banner>
@@ -269,15 +252,14 @@ const TestCharts = () => {
     if (feedbacks.length === 0 && surveyData.length === 0) {
         return (
             <Page
-                title="Survey Data Visualization"
-                backAction={{ content: "Back", url: "/app/" }}
+                title={t("chart_title")}
+                backAction={{ content: t("chart_back"), url: withLang("/app/") }}
             >
                 <BlockStack gap="400">
-                    {/* Shop Info Banner */}
                     <Banner tone="info">
                         <InlineStack gap="200" blockAlign="center">
                             <Text variant="bodyMd" fontWeight="semibold">
-                                🏪 Store: {shop}
+                                🏪 {t("store_label")}: {shop}
                             </Text>
                         </InlineStack>
                     </Banner>
@@ -286,37 +268,13 @@ const TestCharts = () => {
                         <Box padding="600">
                             <BlockStack gap="400" align="center">
                                 <Text variant="headingMd" alignment="center">
-                                    {language === 'en'
-                                        ? 'No Survey Data Available'
-                                        : language === 'fr'
-                                            ? 'Aucune donnée d\'enquête disponible'
-                                            : language === 'it'
-                                                ? 'Nessun dato del sondaggio disponibile'
-                                                : language === 'es'
-                                                    ? 'No hay datos de encuesta disponibles'
-                                                    : 'Keine Umfragedaten verfügbar'}
+                                    {t("chart_no_data_title")}
                                 </Text>
                                 <Text variant="bodyMd" tone="subdued" alignment="center">
-                                    {language === 'en'
-                                        ? 'Create a survey and collect responses to see analytics here.'
-                                        : language === 'fr'
-                                            ? 'Créez une enquête et collectez des réponses pour voir les analyses ici.'
-                                            : language === 'it'
-                                                ? 'Crea un sondaggio e raccogli le risposte per vedere qui le analisi.'
-                                                : language === 'es'
-                                                    ? 'Crea una encuesta y recopila respuestas para ver aquí los análisis.'
-                                                    : 'Erstellen Sie eine Umfrage und sammeln Sie Antworten, um hier Analysen zu sehen.'}
+                                    {t("chart_no_data_desc")}
                                 </Text>
-                                <Button url="/app/">
-                                    {language === 'en'
-                                        ? 'Go to Surveys'
-                                        : language === 'fr'
-                                            ? 'Aller aux enquêtes'
-                                            : language === 'it'
-                                                ? 'Vai ai sondaggi'
-                                                : language === 'es'
-                                                    ? 'Ir a Encuestas'
-                                                    : 'Zu Umfragen'}
+                                <Button url={withLang("/app/")}>
+                                    {t("chart_go_surveys")}
                                 </Button>
                             </BlockStack>
                         </Box>
@@ -328,27 +286,38 @@ const TestCharts = () => {
 
     return (
         <Page
-            title="Survey Data Visualization"
-            subtitle={`Analytics for ${shop || 'your store'}`}
-            backAction={{ content: "Back", url: "/app/" }}
+            title={t("chart_title")}
+            subtitle={t("chart_subtitle", { shop: shop || '' })}
+            backAction={{ content: t("chart_back"), url: withLang("/app/") }}
         >
             <BlockStack gap="400">
-                {/* Shop Info Banner */}
-                <Banner tone="info">
-                    <InlineStack gap="200" blockAlign="center">
-                        <Text variant="bodyMd" fontWeight="semibold">
-                            🏪 Store: {shop}
-                        </Text>
-                        {shopDomain && (
-                            <>
-                                <Text variant="bodyMd" tone="subdued">|</Text>
-                                <Text variant="bodyMd" tone="subdued">
-                                    Domain: {shopDomain}
-                                </Text>
-                            </>
-                        )}
-                    </InlineStack>
-                </Banner>
+                {/* Shop Info Banner + Language Dropdown */}
+                <InlineStack align="space-between" blockAlign="center" wrap={false}>
+                    <Banner tone="info">
+                        <InlineStack gap="200" blockAlign="center">
+                            <Text variant="bodyMd" fontWeight="semibold">
+                                🏪 {t("store_label")}: {shop}
+                            </Text>
+                            {shopDomain && (
+                                <>
+                                    <Text variant="bodyMd" tone="subdued">|</Text>
+                                    <Text variant="bodyMd" tone="subdued">
+                                        {t("fb_domain")}: {shopDomain}
+                                    </Text>
+                                </>
+                            )}
+                        </InlineStack>
+                    </Banner>
+                    <div style={{ minWidth: 200 }}>
+                        <Select
+                            label=""
+                            labelHidden
+                            options={LANGUAGES_DROPDOWN}
+                            value={uiLanguage}
+                            onChange={handleLanguageChange}
+                        />
+                    </div>
+                </InlineStack>
 
                 {/* Stats & Controls Card */}
                 <Card>
@@ -356,155 +325,31 @@ const TestCharts = () => {
                         <InlineStack align="space-between" blockAlign="center">
                             <BlockStack gap="100">
                                 <Text as="h2" variant="headingMd">
-                                    {language === 'en'
-                                        ? 'Analytics Overview'
-                                        : language === 'fr'
-                                            ? 'Aperçu analytique'
-                                            : language === 'it'
-                                                ? 'Panoramica analitica'
-                                                : language === 'es'
-                                                    ? 'Resumen analítico'
-                                                    : 'Analyseübersicht'}
+                                    {t("chart_overview")}
                                 </Text>
                                 <InlineStack gap="200">
                                     <Badge tone="info">
-                                        {totalResponses} {language === 'en'
-                                            ? 'Responses'
-                                            : language === 'fr'
-                                                ? 'Réponses'
-                                                : language === 'it'
-                                                    ? 'Risposte'
-                                                    : language === 'es'
-                                                        ? 'Respuestas'
-                                                        : 'Antworten'}
+                                        {totalResponses} {t("chart_responses")}
                                     </Badge>
                                     {isFilterActive && (
                                         <Badge tone="attention">
-                                            {language === 'en'
-                                                ? 'Filtered'
-                                                : language === 'fr'
-                                                    ? 'Filtré'
-                                                    : language === 'it'
-                                                        ? 'Filtrato'
-                                                        : language === 'es'
-                                                            ? 'Filtrado'
-                                                            : 'Gefiltert'}
+                                            {t("chart_filtered")}
                                         </Badge>
                                     )}
                                 </InlineStack>
                             </BlockStack>
-
-                            <InlineStack gap="200">
-                                {/* <Button
-                                    onClick={toggleLanguage}
-                                    icon={LanguageIcon}
-                                    accessibilityLabel={
-                                        language === 'en'
-                                            ? 'Switch to French'
-                                            : language === 'fr'
-                                                ? 'Switch to Italian'
-                                                : language === 'it'
-                                                    ? 'Switch to Spanish'
-                                                    : 'Switch to English'
-                                    }
-                                >
-                                    {language === 'en'
-                                        ? 'EN'
-                                        : language === 'fr'
-                                            ? 'FR'
-                                            : language === 'it'
-                                                ? 'IT'
-                                                : 'ES'}
-                                </Button> */}
-
-
-                                <div style={{ display: 'flex', gap: '8px' }}>
-                                    <Button
-                                        onClick={() => setLanguage('en')}
-                                        icon={LanguageIcon}
-                                        accessibilityLabel="Switch to English"
-                                        pressed={language === 'en'}
-                                    >
-                                        EN
-                                    </Button>
-
-                                    <Button
-                                        onClick={() => setLanguage('fr')}
-                                        icon={LanguageIcon}
-                                        accessibilityLabel="Switch to French"
-                                        pressed={language === 'fr'}
-                                    >
-                                        FR
-                                    </Button>
-
-                                    <Button
-                                        onClick={() => setLanguage('it')}
-                                        icon={LanguageIcon}
-                                        accessibilityLabel="Switch to Italian"
-                                        pressed={language === 'it'}
-                                    >
-                                        IT
-                                    </Button>
-
-                                    <Button
-                                        onClick={() => setLanguage('es')}
-                                        icon={LanguageIcon}
-                                        accessibilityLabel="Switch to Spanish"
-                                        pressed={language === 'es'}
-                                    >
-                                        ES
-                                    </Button>
-
-                                    <Button
-                                        onClick={() => setLanguage('de')}
-                                        icon={LanguageIcon}
-                                        accessibilityLabel="Switch to German"
-                                        pressed={language === 'de'}
-                                    >
-                                        DE
-                                    </Button>
-                                </div>
-
-
-                                {/* <Button
-                                    variant="primary"
-                                    icon={CalendarIcon}
-                                    onClick={() => setIsModalOpen(true)}
-                                >
-                                    {language === 'en' ? 'Date Range' : 'Plage de dates'}
-                                </Button> */}
-                            </InlineStack>
                         </InlineStack>
 
                         {isFilterActive && (
                             <>
                                 <Divider />
-                                <Banner
-                                    tone="info"
-                                    onDismiss={handleCancel}
-                                >
+                                <Banner tone="info" onDismiss={handleCancel}>
                                     <InlineStack gap="200" blockAlign="center">
                                         <Icon source={FilterIcon} />
                                         <Text as="p">
-                                            {language === 'en'
-                                                ? 'Showing data from'
-                                                : language === 'fr'
-                                                    ? 'Affichage des données du'
-                                                    : language === 'it'
-                                                        ? 'Visualizzazione dati dal'
-                                                        : language === 'es'
-                                                            ? 'Mostrando datos desde'
-                                                            : 'Daten anzeigen von'}{' '}
+                                            {t("chart_showing_data")}{' '}
                                             {formatDate(selectedDates.start)}{' '}
-                                            {language === 'en'
-                                                ? 'to'
-                                                : language === 'fr'
-                                                    ? 'au'
-                                                    : language === 'it'
-                                                        ? 'al'
-                                                        : language === 'es'
-                                                            ? 'a'
-                                                            : 'bis'}{' '}
+                                            {t("chart_to")}{' '}
                                             {formatDate(selectedDates.end)}
                                         </Text>
                                     </InlineStack>
@@ -518,15 +363,7 @@ const TestCharts = () => {
                 <Card>
                     <BlockStack gap="300">
                         <Text as="h3" variant="headingSm">
-                            {language === 'en'
-                                ? 'Chart Type'
-                                : language === 'fr'
-                                    ? 'Type de graphique'
-                                    : language === 'it'
-                                        ? 'Tipo di grafico'
-                                        : language === 'es'
-                                            ? 'Tipo de gráfico'
-                                            : 'Diagrammtyp'}
+                            {t("chart_type")}
                         </Text>
                         <InlineStack align="center">
                             <ButtonGroup variant="segmented">
@@ -537,7 +374,7 @@ const TestCharts = () => {
                                         onClick={() => handleButtonClick(key)}
                                         icon={config.icon}
                                     >
-                                        {config.label[language]}
+                                        {t(config.labelKey)}
                                     </Button>
                                 ))}
                             </ButtonGroup>
@@ -550,18 +387,10 @@ const TestCharts = () => {
                     <BlockStack gap="400">
                         <InlineStack align="space-between" blockAlign="center">
                             <Text as="h3" variant="headingMd">
-                                {chartConfig[activeButtonIndex].label[language]}
+                                {t(chartConfig[activeButtonIndex].labelKey)}
                             </Text>
                             <Badge tone="success">
-                                {language === 'en'
-                                    ? 'Live Data'
-                                    : language === 'fr'
-                                        ? 'Données en direct'
-                                        : language === 'it'
-                                            ? 'Dati in tempo reale'
-                                            : language === 'es'
-                                                ? 'Datos en vivo'
-                                                : 'Live-Daten'}
+                                {t("chart_live")}
                             </Badge>
                         </InlineStack>
                         <Divider />
@@ -573,26 +402,10 @@ const TestCharts = () => {
                             <Box padding="600">
                                 <BlockStack gap="200" align="center">
                                     <Text variant="bodyMd" tone="subdued" alignment="center">
-                                        {language === 'en'
-                                            ? 'No data available for the selected date range.'
-                                            : language === 'fr'
-                                                ? 'Aucune donnée disponible pour la plage de dates sélectionnée.'
-                                                : language === 'it'
-                                                    ? 'Nessun dato disponibile per l’intervallo di date selezionato.'
-                                                    : language === 'es'
-                                                        ? 'No hay datos disponibles para el rango de fechas seleccionado.'
-                                                        : 'Keine Daten für den ausgewählten Datumsbereich verfügbar.'}
+                                        {t("chart_no_range_data")}
                                     </Text>
                                     <Button onClick={handleCancel}>
-                                        {language === 'en'
-                                            ? 'Reset Filter'
-                                            : language === 'fr'
-                                                ? 'Réinitialiser le filtre'
-                                                : language === 'it'
-                                                    ? 'Reimposta filtro'
-                                                    : language === 'es'
-                                                        ? 'Restablecer filtro'
-                                                        : 'Filter zurücksetzen'}
+                                        {t("chart_reset_filter")}
                                     </Button>
                                 </BlockStack>
                             </Box>
@@ -606,63 +419,26 @@ const TestCharts = () => {
                 <Modal
                     open={isModalOpen}
                     onClose={() => setIsModalOpen(false)}
-                    title={
-                        language === 'en'
-                            ? 'Select Date Range'
-                            : language === 'fr'
-                                ? 'Sélectionner la plage de dates'
-                                : language === 'it'
-                                    ? 'Seleziona intervallo di date'
-                                    : language === 'es'
-                                        ? 'Seleccionar rango de fechas'
-                                        : 'Datumsbereich auswählen'
-                    }
+                    title={t("chart_select_range")}
                     primaryAction={{
-                        content:
-                            language === 'en'
-                                ? 'Apply Filter'
-                                : language === 'fr'
-                                    ? 'Appliquer le filtre'
-                                    : language === 'it'
-                                        ? 'Applica filtro'
-                                        : language === 'es'
-                                            ? 'Aplicar filtro'
-                                            : 'Filter anwenden',
+                        content: t("chart_apply_filter"),
                         onAction: handleApplyFilter,
                     }}
                     secondaryActions={[{
-                        content:
-                            language === 'en'
-                                ? 'Clear & Reset'
-                                : language === 'fr'
-                                    ? 'Effacer et réinitialiser'
-                                    : 'Cancella e reimposta',
+                        content: t("chart_clear_reset"),
                         onAction: handleCancel,
                         destructive: true,
                     }]}
                 >
                     <Modal.Section>
                         <BlockStack gap="400">
-                            {/* Store Context */}
                             <Banner tone="info">
                                 <Text as="p" variant="bodySm">
-                                    {language === 'en'
-                                        ? `Filtering analytics for ${shop}`
-                                        : language === 'fr'
-                                            ? `Filtrage des analyses pour ${shop}`
-                                            : language === 'it'
-                                                ? `Filtraggio delle analisi per ${shop}`
-                                                : language === 'es'
-                                                    ? `Filtrando análisis para ${shop}`
-                                                    : `Analysen für ${shop} werden gefiltert`}
+                                    {t("chart_filtering_for", { shop })}
                                 </Text>
                             </Banner>
 
-                            <Box
-                                padding="300"
-                                background="bg-surface-secondary"
-                                borderRadius="200"
-                            >
+                            <Box padding="300" background="bg-surface-secondary" borderRadius="200">
                                 <InlineStack gap="200" blockAlign="center">
                                     <Icon source={CalendarIcon} tone="base" />
                                     <Text as="p" variant="bodyMd" fontWeight="semibold">
@@ -686,15 +462,7 @@ const TestCharts = () => {
 
                             <Banner tone="info">
                                 <Text as="p" variant="bodySm">
-                                    {language === 'en'
-                                        ? 'Select a date range to filter survey responses. Click "Apply Filter" to update the charts.'
-                                        : language === 'fr'
-                                            ? 'Sélectionnez une plage de dates pour filtrer les réponses. Cliquez sur "Appliquer le filtre" pour mettre à jour les graphiques.'
-                                            : language === 'it'
-                                                ? 'Seleziona un intervallo di date per filtrare le risposte al sondaggio. Fai clic su "Applica filtro" per aggiornare i grafici.'
-                                                : language === 'es'
-                                                    ? 'Seleccione un rango de fechas para filtrar las respuestas de la encuesta. Haga clic en "Aplicar filtro" para actualizar los gráficos.'
-                                                    : 'Wählen Sie einen Datumsbereich aus, um die Umfrageantworten zu filtern. Klicken Sie auf "Filter anwenden", um die Diagramme zu aktualisieren.'}
+                                    {t("chart_filter_hint")}
                                 </Text>
                             </Banner>
                         </BlockStack>
@@ -717,7 +485,6 @@ const formatSurveyData = (feedbacks, surveyData) => {
             const answersCount = {};
             feedbacks.forEach(feedback => {
                 const answers = JSON.parse(feedback.answers);
-                // const answer = answers.find(a => a.questionTitle === question.text)?.answer;
                 const answer = answers.find(
                     (a) =>
                         a.questionTitle?.trim().toLowerCase() ===
@@ -741,7 +508,6 @@ const formatSurveyData = (feedbacks, surveyData) => {
         });
         console.log("survey.isItalianVersion", survey.isItalianVersion);
         return {
-
             ...survey,
             questions: questionsWithAnswers,
             totalUsers: feedbacks.length

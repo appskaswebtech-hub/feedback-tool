@@ -7,8 +7,9 @@ import {
   useActionData,
   useNavigate,
   useNavigation,
+  useSearchParams,
 } from "@remix-run/react";
-import { useState, useEffect } from "react";
+import { useState, useEffect, useCallback } from "react";
 import {
   Page,
   Button,
@@ -20,6 +21,7 @@ import {
   Banner,
   Badge,
   List,
+  Select,
 } from "@shopify/polaris";
 import { authenticate }      from "../shopify.server";
 import { PLANS, PLAN_KEYS }  from "../config/plans";
@@ -27,43 +29,46 @@ import {
   getShopPlanFromDB,
   updateShopPlan,
 } from "../utils/planUtils";
+import { getT, LANG_KEY_TO_ISO } from "../utils/translations";
+
+const LANGUAGES_DROPDOWN = [
+  { label: "🌐  Default (English)", value: "default" },
+  { label: "🇫🇷  French",           value: "french" },
+  { label: "🇪🇸  Spanish",          value: "spanish" },
+  { label: "🇮🇹  Italian",          value: "italian" },
+  { label: "🇩🇪  German",           value: "german" },
+];
 
 // ─── UI Plan definitions ───────────────────────────────────────
 const PLANS_UI = [
-  {
-    key:      "free",
-    color:    "#f6f6f7",
-    popular:  false,
-    features: [
-      "1 Survey",
-      "Basic question types",
-      "Email notifications",
-      "Standard support",
-    ],
-  },
-  {
-    key:      "pro",
-    color:    "#f0f7ff",
-    popular:  true,
-    features: [
-      "Up to 5 Surveys",
-      "All question types",
-      "Priority support",
-      "Analytics & Charts",
-    ],
-  },
-  {
-    key:      "advanced",
-    color:    "#f3f0ff",
-    popular:  false,
-    features: [
-      "Unlimited Surveys",
-      "All question types",
-      "Priority support",
-      "Export responses",
-    ],
-  },
-].map((ui) => ({ ...ui, ...PLANS[ui.key] }));
+    {
+      key: "free", color: "#f6f6f7", popular: false,
+      featureKeys: [
+        "billing_feat_1_survey",
+        "billing_feat_basic_types",
+        "billing_feat_email_notif",
+        "billing_feat_standard_support",
+      ],
+    },
+    {
+      key: "pro", color: "#f0f7ff", popular: true,
+      featureKeys: [
+        "billing_feat_5_surveys",
+        "billing_feat_all_types",
+        "billing_feat_priority_support",
+        "billing_feat_analytics",
+      ],
+    },
+    {
+      key: "advanced", color: "#f3f0ff", popular: false,
+      featureKeys: [
+        "billing_feat_unlimited",
+        "billing_feat_all_types",
+        "billing_feat_priority_support",
+        "billing_feat_export",
+      ],
+    },
+  ].map((ui) => ({ ...ui, ...PLANS[ui.key] }));
 
 // ─── LOADER ───────────────────────────────────────────────────
 export const loader = async ({ request }) => {
@@ -78,10 +83,12 @@ export const action = async ({ request }) => {
   const shop     = session.shop;
   const formData = await request.formData();
   const planKey  = formData.get("plan");
+  const returnLang = formData.get("returnLang") || "default";
 
   if (planKey === "free") {
     await updateShopPlan(shop, "free", null);
-    return redirect("/app");
+    const redirectUrl = returnLang !== "default" ? `/app?lang=${returnLang}` : "/app";
+    return redirect(redirectUrl);
   }
 
   if (!PLAN_KEYS.includes(planKey)) {
@@ -120,12 +127,9 @@ export const action = async ({ request }) => {
       {
         variables: {
           name: planKey,
-
-          // ✅ Uses Shopify Admin URL — tunnel URL is irrelevant here
           returnUrl: `https://${shop}/admin/apps/${process.env.SHOPIFY_API_KEY}/app/billing-return`,
-
           trialDays: 0,
-          test:      true, // ← set false in production
+          test:      true,
           lineItems: [
             {
               plan: {
@@ -162,8 +166,6 @@ export const action = async ({ request }) => {
       );
     }
 
-    // ✅ DO NOT update DB here — wait for payment confirmation
-    // DB is updated in app.billing-return.jsx after Shopify redirects back
     return json({ confirmationUrl });
 
   } catch (err) {
@@ -182,10 +184,34 @@ export default function BillingPage() {
   const navigate        = useNavigate();
   const navigation      = useNavigation();
   const [submittingPlan, setSubmittingPlan] = useState(null);
+  const [searchParams, setSearchParams]     = useSearchParams();
+
+  // ── Language from URL ──────────────────────────────────────
+  const uiLanguage = searchParams.get("lang") || "default";
+  const uiLangIso  = LANG_KEY_TO_ISO[uiLanguage] ?? "en";
+  const t          = getT(uiLangIso);
+
+  const withLang = useCallback(
+    (path) => {
+      const sep = path.includes("?") ? "&" : "?";
+      return uiLanguage === "default" ? path : `${path}${sep}lang=${uiLanguage}`;
+    },
+    [uiLanguage],
+  );
+
+  const handleLanguageChange = useCallback(
+    (value) => {
+      setSearchParams((prev) => {
+        if (value === "default") prev.delete("lang");
+        else prev.set("lang", value);
+        return prev;
+      });
+    },
+    [setSearchParams],
+  );
 
   const isSubmitting = navigation.state === "submitting";
 
-  // ✅ Escape Shopify iframe → open billing confirmation page
   useEffect(() => {
     if (actionData?.confirmationUrl) {
       open(actionData.confirmationUrl, "_top");
@@ -194,62 +220,48 @@ export default function BillingPage() {
 
   return (
     <Page
-      title="Choose Your Plan"
-      subtitle="Upgrade anytime to unlock more surveys and features"
+      title={t("billing_title")}
+      subtitle={t("billing_subtitle")}
       backAction={{
-        content: "Back",
-        onAction: () => navigate("/app"),
+        content: t("billing_back"),
+        onAction: () => navigate(withLang("/app")),
       }}
     >
       <BlockStack gap="500">
+
+        {/* Language Dropdown */}
         <InlineStack align="end">
           <div style={{ minWidth: 200 }}>
             <Select
               label=""
               labelHidden
-              options={[
-                { label: "🌐 Default (English)", value: "default" },
-                { label: "🇫🇷 French", value: "french" },
-                { label: "🇪🇸 Spanish", value: "spanish" },
-                { label: "🇮🇹 Italian", value: "italian" },
-                { label: "🇩🇪 German", value: "german" },
-              ]}
+              options={LANGUAGES_DROPDOWN}
               value={uiLanguage}
-              onChange={(value) => {
-                setSearchParams((prev) => {
-                  if (value === "default") prev.delete("lang");
-                  else prev.set("lang", value);
-                  return prev;
-                });
-              }}
+              onChange={handleLanguageChange}
             />
           </div>
         </InlineStack>
 
         {/* Error Banner */}
         {actionData?.error && (
-          <Banner title="Billing Error" tone="critical">
+          <Banner title={t("billing_error")} tone="critical">
             <Text>{actionData.error}</Text>
           </Banner>
         )}
 
         {/* Redirecting Banner */}
         {actionData?.confirmationUrl && (
-          <Banner title="Redirecting to Shopify billing..." tone="info">
-            <Text>
-              Please wait while we redirect you to confirm your subscription.
-            </Text>
+          <Banner title={t("billing_redirecting")} tone="info">
+            <Text>{t("billing_redirect_wait")}</Text>
           </Banner>
         )}
 
         {/* Current Plan Banner */}
         <Banner
-          title={`You are currently on the ${currentPlan.toUpperCase()} plan`}
+          title={t("billing_current_plan", { plan: currentPlan.toUpperCase() })}
           tone="info"
         >
-          <Text>
-            Upgrade below to unlock more surveys and premium features.
-          </Text>
+          <Text>{t("billing_upgrade_hint")}</Text>
         </Banner>
 
         {/* Pricing Cards */}
@@ -290,21 +302,21 @@ export default function BillingPage() {
                     </Text>
                     <InlineStack gap="200">
                       {plan.popular && (
-                        <Badge tone="info">Most Popular</Badge>
+                        <Badge tone="info">{t("billing_most_popular")}</Badge>
                       )}
                       {isCurrent && (
-                        <Badge tone="success">Current</Badge>
+                        <Badge tone="success">{t("billing_current")}</Badge>
                       )}
                     </InlineStack>
                   </InlineStack>
 
                   <Box paddingBlockStart="200">
                     <Text variant="heading2xl" fontWeight="bold">
-                      {plan.price === 0 ? "Free" : `$${plan.price}`}
+                      {plan.price === 0 ? t("billing_free") : `$${plan.price}`}
                     </Text>
                     {plan.price > 0 && (
                       <Text variant="bodySm" tone="subdued">
-                        per month
+                        {t("billing_per_month")}
                       </Text>
                     )}
                   </Box>
@@ -314,13 +326,13 @@ export default function BillingPage() {
                 <div style={{ padding: "20px 24px", flexGrow: 1 }}>
                   <BlockStack gap="200">
                     <Text variant="bodyMd" fontWeight="semibold">
-                      What's included:
+                      {t("billing_included")}
                     </Text>
                     <List type="bullet">
-                      {plan.features.map((f, i) => (
-                        <List.Item key={i}>{f}</List.Item>
+                      {plan.featureKeys.map((fKey, i) => (
+                        <List.Item key={i}>{t(fKey)}</List.Item>
                       ))}
-                    </List>
+                   </List>
                   </BlockStack>
                 </div>
 
@@ -333,11 +345,12 @@ export default function BillingPage() {
                 >
                   {isCurrent ? (
                     <Button fullWidth disabled>
-                      ✓ Current Plan
+                      {t("billing_current_btn")}
                     </Button>
                   ) : (
                     <Form method="post">
                       <input type="hidden" name="plan" value={plan.key} />
+                      <input type="hidden" name="returnLang" value={uiLanguage} />
                       <Button
                         fullWidth
                         variant={plan.price > 0 ? "primary" : "secondary"}
@@ -349,8 +362,8 @@ export default function BillingPage() {
                         onClick={() => setSubmittingPlan(plan.key)}
                       >
                         {plan.price === 0
-                          ? "Use Free Plan"
-                          : `Upgrade to ${plan.label}`}
+                          ? t("billing_use_free")
+                          : t("billing_upgrade_to", { plan: plan.label })}
                       </Button>
                     </Form>
                   )}
@@ -363,7 +376,7 @@ export default function BillingPage() {
         {/* Footer */}
         <Box paddingBlockEnd="400">
           <Text alignment="center" tone="subdued" variant="bodySm">
-            Cancel anytime from your Shopify admin. Billed in USD.
+            {t("billing_footer")}
           </Text>
         </Box>
 

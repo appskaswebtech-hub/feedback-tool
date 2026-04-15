@@ -5,11 +5,12 @@
 
 import { json }      from "@remix-run/node";
 import { useEffect } from "react";
-import { useNavigate, useLoaderData } from "@remix-run/react";
+import { useNavigate, useLoaderData, useSearchParams } from "@remix-run/react";
 import { Page, Spinner, BlockStack, Text, Banner } from "@shopify/polaris";
 import { authenticate } from "../shopify.server";
 import { PLANS }        from "../config/plans";
 import { updateShopPlan } from "../utils/planUtils";
+import { getT, LANG_KEY_TO_ISO } from "../utils/translations";
 
 // ─── GraphQL: fetch the current active subscription from Shopify ───
 const ACTIVE_SUBSCRIPTION_QUERY = `#graphql
@@ -26,30 +27,24 @@ const ACTIVE_SUBSCRIPTION_QUERY = `#graphql
 
 // ─── LOADER ───────────────────────────────────────────────────────
 export const loader = async ({ request }) => {
-  // authenticate.admin() uses the ?shop= param Shopify appends to the returnUrl
   const { admin, session } = await authenticate.admin(request);
   const shop = session.shop;
 
   try {
-    // 1. Query Shopify for the active subscription
     const response = await admin.graphql(ACTIVE_SUBSCRIPTION_QUERY);
     const data     = await response.json();
 
     const activeSubscriptions =
       data?.data?.currentAppInstallation?.activeSubscriptions ?? [];
 
-    // 2. Find the first ACTIVE subscription
     const activeSub = activeSubscriptions.find(
       (sub) => sub.status === "ACTIVE"
     );
 
     if (activeSub) {
-      // activeSub.name is the planKey passed as `name` in AppSubscriptionCreate
-      // e.g. "pro" or "advanced"
       const planKey  = activeSub.name.toLowerCase();
       const planMeta = PLANS[planKey];
 
-      // 3. ✅ Update ShopPlan table NOW — after payment is confirmed
       await updateShopPlan(shop, planKey, activeSub.id);
 
       console.log(`[billing-return] ✅ Plan updated → ${planKey} for ${shop}`);
@@ -63,7 +58,6 @@ export const loader = async ({ request }) => {
       });
     }
 
-    // No active subscription — merchant cancelled or declined payment
     console.warn(
       `[billing-return] ⚠️ No ACTIVE subscription found for ${shop}. Resetting to free.`
     );
@@ -81,11 +75,21 @@ export const loader = async ({ request }) => {
 export default function BillingReturnPage() {
   const { ok, plan } = useLoaderData();
   const navigate     = useNavigate();
+  const [searchParams] = useSearchParams();
+
+  // ── Language from URL ──────────────────────────────────────
+  const uiLanguage = searchParams.get("lang") || "default";
+  const uiLangIso  = LANG_KEY_TO_ISO[uiLanguage] ?? "en";
+  const t          = getT(uiLangIso);
+
+  const billingUrl = uiLanguage === "default"
+    ? "/app/billing"
+    : `/app/billing?lang=${uiLanguage}`;
 
   useEffect(() => {
-    const timer = setTimeout(() => navigate("/app/billing"), 5000);
+    const timer = setTimeout(() => navigate(billingUrl), 5000);
     return () => clearTimeout(timer);
-  }, [navigate]);
+  }, [navigate, billingUrl]);
 
   return (
     <Page>
@@ -101,22 +105,21 @@ export default function BillingReturnPage() {
       >
         <BlockStack gap="400" inlineAlign="center">
           {ok && plan ? (
-            <Banner tone="success" title="Plan activated successfully!">
+            <Banner tone="success" title={t("billing_return_success")}>
               <Text>
-                You are now on the <strong>{plan.label ?? plan.name}</strong> plan.
-                Redirecting you back to the app...
+                {t("billing_return_now_on", { plan: plan.label ?? plan.name })}
               </Text>
             </Banner>
           ) : (
-            <Banner tone="warning" title="Could not confirm plan.">
+            <Banner tone="warning" title={t("billing_return_fail")}>
               <Text>
-                Redirecting you back. Please check your plan status in the app.
+                {t("billing_return_fail_desc")}
               </Text>
             </Banner>
           )}
           <Spinner size="large" />
           <Text tone="subdued" variant="bodySm">
-            Redirecting in 5 seconds...
+            {t("billing_return_redirect")}
           </Text>
         </BlockStack>
       </div>
